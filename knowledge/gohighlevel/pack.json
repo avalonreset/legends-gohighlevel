@@ -1,0 +1,54 @@
+{
+  "schema": "legends.knowledge-pack/v1",
+  "id": "gohighlevel",
+  "module": "legends-gohighlevel",
+  "version": "0.1.0",
+  "entrypoint": "index.md",
+  "files": [
+    {
+      "path": "agency-governance.md",
+      "sha256": "06489003e16a21d206eafe3dfef69b304a2765687e0f0599e4640846a1363c31"
+    },
+    {
+      "path": "authentication.md",
+      "sha256": "cb7d35699f8376a9cb63a3b1044840c5eb212bba33599d2cb7aff9c761b2959e"
+    },
+    {
+      "path": "crm-operations.md",
+      "sha256": "82743df1ba22ec3bbff7ae667b0b8d3c909d12be7f4a29f35ba7c0d7e407b2dc"
+    },
+    {
+      "path": "email-and-deliverability.md",
+      "sha256": "2dd04247152acf3e3bc654112f7f69690edff7a5303c43df0887d272992f5c0e"
+    },
+    {
+      "path": "index.md",
+      "sha256": "0ae70c9adcfa89d10051d2a906600b25068ca5b424bd0f0602426220477e2972"
+    },
+    {
+      "path": "sources.md",
+      "sha256": "1d334187754cd813c73a11cec31def88c8c8eb53c599e4d3b70d5c619a101901"
+    },
+    {
+      "path": "templates/change-receipt.md",
+      "sha256": "65bd28bd2ae66267b000a3b24c81e443e8f9444a3ffae3dabd459a5d64cbd886"
+    },
+    {
+      "path": "templates/subaccount-inventory.md",
+      "sha256": "bd160adcf89033cb63c24a69d543dc5a796ed4c2c6446f34f6ada95ef3a86c31"
+    },
+    {
+      "path": "templates/unnerf-audit-receipt.md",
+      "sha256": "c7a6710dce1e49b3170c47aaa0aed9e09ceda14fe384d796d0f3bdacac248587"
+    },
+    {
+      "path": "troubleshooting.md",
+      "sha256": "175327807e03a068da25f4406d1bceb7ee469fd78ca7fc9fa7efe9bd5c837fa8"
+    }
+  ],
+  "ontology": {
+    "suggested_home": "wiki/library/legends-gohighlevel/gohighlevel",
+    "purpose": "Operate GoHighLevel sub-account CRM resources, preview-first custom-value mutations, Custom SMTP and subdomain MX isolation, V1/V2 user scope audits, and safe 1.05x rebilling across all four HighLevel billing stores.",
+    "kind": "library"
+  }
+}

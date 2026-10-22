@@ -1,0 +1,35 @@
+{
+  "template": "legends-type-v1",
+  "title": "legends-gohighlevel",
+  "subtitle_lines": [
+    "gohighlevel crm, pipelines, and agency governance",
+    "with preview-first mutations and a knowledge vault"
+  ],
+  "size": [
+    4096,
+    1024
+  ],
+  "text_bounds": [
+    [
+      192,
+      212,
+      2263,
+      385
+    ],
+    [
+      192,
+      534,
+      3328,
+      636
+    ],
+    [
+      192,
+      666,
+      3392,
+      768
+    ]
+  ],
+  "font_sha256": "3769f0f76477a7d9e2e6cb40422dedacb56c9ab1a6f7beee89b2b9ba6b8091ee",
+  "banner_sha256": "c785bef45b10572737c35838d2b69f5b1d7c13d99ef67c5561778ef964b03c40",
+  "published": false
+}

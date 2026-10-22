@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "legends-gohighlevel"
+version = "0.1.0"
+description = "GoHighLevel CRM and sub-account governance CLI with preview-first mutations, API readback, rebilling and scope audits, and a source-cited knowledge vault."
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "Benjamin Samar / cto-legends"}]
+dependencies = []
+readme = "README.md"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+  "Topic :: Office/Business",
+  "Topic :: System :: Systems Administration",
+]
+
+[project.scripts]
+legends-gohighlevel = "legends_gohighlevel.cli:main"
+
+[project.urls]
+Repository = "https://github.com/avalonreset/legends-gohighlevel"
+Issues = "https://github.com/avalonreset/legends-gohighlevel/issues"
+
+[tool.setuptools.packages.find]
+include = ["legends_gohighlevel*"]
