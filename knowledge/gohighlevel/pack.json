@@ -7,31 +7,31 @@
   "files": [
     {
       "path": "agency-governance.md",
-      "sha256": "5697c0837c9ec5ae96920159415b6f7bba62a0b50f1570dd057339e337593701"
+      "sha256": "95951c583cec6aede82999dbb08a0777afdc3b03904a9c81668a8b3e3b5f9f2d"
     },
     {
       "path": "authentication.md",
-      "sha256": "b777120fdf0a8749817681a4bd9c42aeb82599cf0a5c6bcba40eb1111759d369"
+      "sha256": "cb7d35699f8376a9cb63a3b1044840c5eb212bba33599d2cb7aff9c761b2959e"
     },
     {
       "path": "crm-operations.md",
-      "sha256": "b8c64ebe18810388329b3326db72373af3cdffce621176c931f3afb49ad20b00"
+      "sha256": "df2f31e76c3688471bca846b992a65bda02306d49c4a0e0cb39cd0851e00291f"
     },
     {
       "path": "email-and-deliverability.md",
-      "sha256": "082c18bc0ddc6f8a1e5f9704279a58867a8adede473871f61cda1abff4b7e820"
+      "sha256": "2dd04247152acf3e3bc654112f7f69690edff7a5303c43df0887d272992f5c0e"
     },
     {
       "path": "index.md",
-      "sha256": "26cef88a9802c4697ea0f8a75529404490bd8eb79d4d231ed0c47f9768a0b94c"
+      "sha256": "6b3091d278162f5f7b09cc97a7d0991299d7264ca86afac407a41dee68085717"
     },
     {
       "path": "internal-backend-and-dashboards.md",
-      "sha256": "8decbd0cebba31d2dfd2fbd12895d78c95164d86d5756b197f4d04882ff028d1"
+      "sha256": "a7e7c71f14104096f7a5d420f4dbba81732f9b7b2da05d4f76a6f9022c74ab65"
     },
     {
       "path": "sources.md",
-      "sha256": "5276e69b859417e4a05eabe9cf059409f22346ad1f63bebd52ab8802e15a2b0f"
+      "sha256": "6ae6be1e38b1185db949c2cd60cb875710dea9cf38c01cc40d2df4e78a26f766"
     },
     {
       "path": "templates/change-receipt.md",
@@ -47,7 +47,7 @@
     },
     {
       "path": "troubleshooting.md",
-      "sha256": "a3b3117e31b3a954d364a3aec883c69a0ee5a112c01b2890ba614067875185ee"
+      "sha256": "ff87539f42d68d8bf53cadb6072f8628bba471bfd7891ffdb7a7f032b064d5da"
     }
   ],
   "ontology": {
