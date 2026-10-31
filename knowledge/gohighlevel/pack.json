@@ -2,32 +2,36 @@
   "schema": "legends.knowledge-pack/v1",
   "id": "gohighlevel",
   "module": "legends-gohighlevel",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "entrypoint": "index.md",
   "files": [
     {
       "path": "agency-governance.md",
-      "sha256": "06489003e16a21d206eafe3dfef69b304a2765687e0f0599e4640846a1363c31"
+      "sha256": "5697c0837c9ec5ae96920159415b6f7bba62a0b50f1570dd057339e337593701"
     },
     {
       "path": "authentication.md",
-      "sha256": "cb7d35699f8376a9cb63a3b1044840c5eb212bba33599d2cb7aff9c761b2959e"
+      "sha256": "b777120fdf0a8749817681a4bd9c42aeb82599cf0a5c6bcba40eb1111759d369"
     },
     {
       "path": "crm-operations.md",
-      "sha256": "82743df1ba22ec3bbff7ae667b0b8d3c909d12be7f4a29f35ba7c0d7e407b2dc"
+      "sha256": "b8c64ebe18810388329b3326db72373af3cdffce621176c931f3afb49ad20b00"
     },
     {
       "path": "email-and-deliverability.md",
-      "sha256": "2dd04247152acf3e3bc654112f7f69690edff7a5303c43df0887d272992f5c0e"
+      "sha256": "082c18bc0ddc6f8a1e5f9704279a58867a8adede473871f61cda1abff4b7e820"
     },
     {
       "path": "index.md",
-      "sha256": "0ae70c9adcfa89d10051d2a906600b25068ca5b424bd0f0602426220477e2972"
+      "sha256": "26cef88a9802c4697ea0f8a75529404490bd8eb79d4d231ed0c47f9768a0b94c"
+    },
+    {
+      "path": "internal-backend-and-dashboards.md",
+      "sha256": "8decbd0cebba31d2dfd2fbd12895d78c95164d86d5756b197f4d04882ff028d1"
     },
     {
       "path": "sources.md",
-      "sha256": "1d334187754cd813c73a11cec31def88c8c8eb53c599e4d3b70d5c619a101901"
+      "sha256": "5276e69b859417e4a05eabe9cf059409f22346ad1f63bebd52ab8802e15a2b0f"
     },
     {
       "path": "templates/change-receipt.md",
@@ -39,16 +43,16 @@
     },
     {
       "path": "templates/unnerf-audit-receipt.md",
-      "sha256": "c7a6710dce1e49b3170c47aaa0aed9e09ceda14fe384d796d0f3bdacac248587"
+      "sha256": "a19964291d6f9364aaeb9e912f471e925af5efce59979e86fe8a9b741ed68cfe"
     },
     {
       "path": "troubleshooting.md",
-      "sha256": "175327807e03a068da25f4406d1bceb7ee469fd78ca7fc9fa7efe9bd5c837fa8"
+      "sha256": "a3b3117e31b3a954d364a3aec883c69a0ee5a112c01b2890ba614067875185ee"
     }
   ],
   "ontology": {
     "suggested_home": "wiki/library/legends-gohighlevel/gohighlevel",
-    "purpose": "Operate GoHighLevel sub-account CRM resources, preview-first custom-value mutations, Custom SMTP and subdomain MX isolation, V1/V2 user scope audits, and safe 1.05x rebilling across all four HighLevel billing stores.",
+    "purpose": "Operate GoHighLevel sub-account CRM, Workflows v3, Agent Studio AI, and Custom Objects resources, live 5-layer agency and dashboard RBAC audits, preview-first mutations, Custom SMTP and subdomain MX isolation, V1/V2 user scope audits, and safe 1.05x rebilling across all four HighLevel billing stores and 14 metered SaaS Billing v2 products.",
     "kind": "library"
   }
 }

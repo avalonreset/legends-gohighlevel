@@ -1,6 +1,6 @@
 # Agency governance, un-nerfing, and safe rebilling
 
-When operating a GoHighLevel Agency account (such as the \$297 Agency Unlimited plan) that provisions sub-accounts for members or clients, HighLevel initializes several hidden restrictions and markup defaults. Use the governance commands to audit and verify safe configurations.
+When operating a GoHighLevel Agency account (such as the \$297 Agency Unlimited plan) that provisions sub-accounts for members or clients, HighLevel initializes several hidden restrictions and markup defaults. Use the governance and live-audit commands to audit and verify safe configurations.
 
 ## 1. The rebilling markup formula and `1.05x` Stripe fee shield
 
@@ -17,7 +17,7 @@ db_markup     = round(ui_multiplier * 100 - 100)
 
 ### Why `db_markup: 5` (`1.05x`) is the safe zero-loss floor
 
-Sub-account usage (SMS, voice, LC Email, Content AI, Voice AI, Conversation AI, Reviews AI, Workflow Premium Actions) runs on a **pre-paid wallet model**:
+Sub-account usage (SMS, voice, LC Email, Content AI, Voice AI, Conversation AI, Reviews AI, Workflow Premium Actions, WhatsApp, Email Warmup, Creator Studio) runs on a **pre-paid wallet model**:
 
 1. The sub-account owner attaches their credit card via Stripe (`Rebilling is on hold, pending payment` until a card is added).
 2. When the sub-account tops up its wallet by **\$10.00**, Stripe deducts **`2.9% + $0.30` (\$0.59)** from the \$10.00 charge, depositing **\$9.41** into the agency's Stripe account.
@@ -30,14 +30,23 @@ Run the deterministic rebilling calculator and 4-store payload generator at any 
 legends-gohighlevel rebilling-audit --wallet-topup 10.00 --markup 5 --location-id LOCATION_ID
 ```
 
-## 2. The four HighLevel rebilling stores
+## 2. The four HighLevel rebilling stores and 14 SaaS Billing v2 products
 
 HighLevel stores rebilling markups across **four separate backend endpoints** that must be kept in sync per location:
 
-1. **SaaS Billing v2 (`PUT /saas-billing-v2/billing-config/group/{locationId}/{keys}`):** Controls the 11 metered usage products (`workflow_premium_actions`, `workflow_ai`, `conversation_AI`, `voiceAI`, `contentAI`, `reviewsAI`, `agentStudio`, `askai`, `aiStudio`, `EmailVerification`, `domainPurchase`).
-2. **Twilio / LC Phone Rebilling (`POST /saas_service/saas-config/{locationId}/update-twilio-rebilling`):** `{"isEnabled": true, "markup": 5}`.
-3. **Mailgun / LC Email Rebilling (`POST /saas_service/saas-config/{locationId}/update-mailgun-rebilling`):** `{"isEnabled": true, "markup": 5, "price": 0.00070875}` (where base wholesale price is `0.000675` per email).
-4. **Location Metadata (`PUT /saas-api/location-metadata/{locationId}`):** Syncs `twilioRebilling.markup` and `mailgunRebilling.markup`.
+1. **SaaS Billing v2 (`GET /saas-billing-v2/billing-config/LOCATION/{locationId}` and `PUT /saas-billing-v2/billing-config/group/{locationId}/{keys}`):** Controls all **14 metered usage products**: `workflow_premium_actions`, `workflow_ai`, `conversation_AI`, `voiceAI`, `contentAI`, `reviewsAI`, `agentStudio`, `askai`, `aiStudio`, `EmailVerification`, `domainPurchase`, `whatsApp`, `emailWarmup`, and `creatorStudio`.
+   - Required `PUT` payload: `{"entityType": "LOCATION", "enabled": true, "optIn": true, "markups": {"workflow_premium_actions": 5, ...}}` (where `enabled` is `true` for `activated` or `setup_pending` locations, and `false` for `not_activated` locations).
+2. **Twilio / LC Phone Rebilling (`POST /saas_service/saas-config/{locationId}/update-twilio-rebilling`):** `{"enabled": true, "markup": 5}` (succeeds with plain-text `"OK"` when `saasMode == "activated"`).
+3. **Location SaaS Settings (`PUT /locations/{locationId}`):** Updates `settings.saasSettings.twilioRebilling` (`{"enabled": isActivated, "markup": 5}`) and `settings.saasSettings.mailgunRebilling` (`{"enabled": isActivated, "markup": 5, "price": 0.00070875}`).
+4. **Location Metadata (`PUT /saas-api/location-metadata/{locationId}`):** Syncs `attachedRebillingConfig` (`Phone` and `Email` at `markup: 5`), `twilioRebilling`, and `mailgunRebilling`.
+
+Inspect or synchronize all 4 stores across the agency with:
+
+```sh
+legends-gohighlevel rebilling-status --all-locations
+legends-gohighlevel rebilling-sync --all-locations --markup 5
+legends-gohighlevel rebilling-sync --all-locations --markup 5 --apply --confirm-plan SHA256_FROM_PREVIEW
+```
 
 ## 3. Unlocking Custom SMTP (`Add Service` button)
 
@@ -50,13 +59,31 @@ HighLevel enforces **two independent locks** that must both be set to `false`:
 2. **Per-location lock (`PUT /email-isv/Setting/feature/location/{locationId}`):**
    `{"blockAddSmtp": false}` (stamped onto each location at creation time if the agency lock was previously enabled).
 
-Generate and verify the exact unlock payloads with:
+Generate and verify the exact unlock payloads offline or apply live with:
 
 ```sh
 legends-gohighlevel smtp-audit --company-id COMPANY_ID --location-id LOCATION_ID
+legends-gohighlevel smtp-status --all-locations
+legends-gohighlevel smtp-unlock --all-locations
+legends-gohighlevel smtp-unlock --all-locations --apply --confirm-plan SHA256_FROM_PREVIEW
 ```
 
-## 4. Sub-account billing holds and 24-hour grace deletion
+## 4. Unlocking Default Dashboard per-role RBAC (`account_admin: full`, `account_user: full`)
+
+When HighLevel provisions a new sub-account, it seeds the sub-account's Default Dashboard (`defaultDashboardId`) with only `agency_user: "full"` and `account_user: "read"`, omitting `account_admin`. Because `account_admin` is omitted, sub-account admins (`type: "account", role: "admin"`) receive `"You do not have permission to perform this operation"` (`errorType = "permission_error"`) when trying to edit or clone the Default Dashboard.
+
+Unlocking `account_admin: "full"` and `account_user: "full"` on all default and custom dashboards via `POST /reporting/dashboards/{dashboardId}/permissions?locationId={locationId}` (`permissionAccess` field) is strictly scoped to that sub-account's dashboard and poses zero cross-tenant or agency risk.
+
+Audit offline or unlock live across all agency sub-accounts:
+
+```sh
+legends-gohighlevel dashboard-audit --location-id LOCATION_ID --dashboard-id DASHBOARD_ID
+legends-gohighlevel dashboard-permissions --all-locations
+legends-gohighlevel unlock-dashboards --all-locations
+legends-gohighlevel unlock-dashboards --all-locations --apply --confirm-plan SHA256_FROM_PREVIEW
+```
+
+## 5. Sub-account billing holds and 24-hour grace deletion
 
 - **Billing Hold (`payment_method_required`):** Before releasing sub-account access to a member or client, enable Stripe rebilling on the location (`Rebilling is on hold, pending payment`) and grant the sub-account admin `locations.billing.manage` (`View and Manage Billing Details`) plus `internaltools.billing-common.write` (`Account Billing 1/1`) so they can enter their own payment card on `/v2/location/{locationId}/payment_setup`.
 - **Soft Deletion (`DELETE /locations/{locationId}?newAccount=false`):** Deleting a sub-account schedules a 24-hour grace period (`deletionScheduledAt: now + 24h`) before permanent purge. Always remove or reassign orphan test users after retiring canary locations.

@@ -12,7 +12,13 @@
   - Agency `emailIsvSettings.blockAddSmtp`:
   - Location `blockAddSmtp`:
   - `/email-isv/onload` readback verified:
-- User permissions and V2 scopes verified:
-  - Worker / Creator holds full 243 V2 scopes:
-  - Sub-account Admin holds all 130 active Account Admin V2 scopes:
+- User permissions, V2 scopes, and alias sync verified:
+  - Worker / Creator holds full Agency Admin V2 scopes:
+  - Sub-account Admin holds all 130 active Account Admin V2 scopes (`130/132` catalog items enabled):
+  - `assignedToSupported: false` ("Only Assigned Data" off across all capabilities):
   - `botService: true` and `adPublishingReadOnly: false` verified:
+  - Primary email and `+hubpro` alias `locationIds` synchronized:
+- Default Dashboard per-role RBAC unlocked (`POST /reporting/dashboards/:id/permissions`):
+  - `agency_user: full`:
+  - `account_admin: full`:
+  - `account_user: full`:

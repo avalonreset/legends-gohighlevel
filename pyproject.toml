@@ -4,13 +4,25 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "legends-gohighlevel"
-version = "0.1.0"
-description = "GoHighLevel CRM and sub-account governance CLI with preview-first mutations, API readback, rebilling and scope audits, and a source-cited knowledge vault."
-requires-python = ">=3.10"
+version = "0.3.0"
+description = "GoHighLevel CRM, agency backend, and sub-account governance CLI with preview-first mutations, API readback, live 5-layer permission, dashboard RBAC, SMTP, and rebilling audits, Workflows v3, Voice/Conversation AI, and a source-cited knowledge vault."
+requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "Benjamin Samar / cto-legends"}]
 dependencies = []
 readme = "README.md"
+keywords = [
+  "gohighlevel",
+  "highlevel",
+  "leadconnector",
+  "crm",
+  "gohighlevel-api",
+  "gohighlevel-cli",
+  "gohighlevel-mcp",
+  "workflow-automation",
+  "voice-ai",
+  "cto-legends",
+]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Operating System :: OS Independent",

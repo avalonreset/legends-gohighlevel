@@ -1,0 +1,15 @@
+name: Bug report
+description: Report a reproducible problem without private sub-account or agency data.
+body:
+  - type: textarea
+    attributes:
+      label: What happened?
+      description: Include the version, OS, Python version, and sanitized command. Never include tokens, Location IDs, or customer PII.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected result and reproduction
+      description: Use synthetic IDs where possible. State whether a write was attempted.
+    validations:
+      required: true
