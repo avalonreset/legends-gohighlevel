@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1 (2026-11-04)
+
+- **Endpoint Security (EDR) Hardening (`legends_gohighlevel/api.py`, `AGENTS.md`, `docs/AGENT-RECIPE.md`, `README.md`, `docs/catalog-entry.candidate.json`):** Removed local desktop browser `IndexedDB` directory scraping (`extract_local_token_from_indexeddb` and `local_indexeddb_path`) and added explicit agent guardrails prohibiting local Chrome, Brave, or Edge profile directory access so Python processes never trigger endpoint infostealer heuristics on Windows or macOS workstations. `BackendClient` resolves `token-id` strictly from `GHL_TOKEN_ID` or remote headless container `worker_ssh`.
+- **Release Hygiene (`scripts/check_release.py`, `docs/EMPIRE.md`):** Added automated release verification against ASCII control characters and `U+FFFD` replacement diamonds, and aligned `legends-empire` CLI examples in `docs/EMPIRE.md`.
+
 ## 0.3.0 (2026-10-31)
 
 - Upgraded `live-audit` to a full **5-layer live agency audit**:

@@ -1,7 +1,7 @@
 # Operate legends-gohighlevel
 
 1. Resolve the selected module source and user workspace. Never save private reports or CRM exports into a managed source checkout.
-2. Run `legends-gohighlevel doctor` (offline runtime check) and `legends-gohighlevel agency-config` (checks `~/.config/legends-gohighlevel/agency.json` for `company_id`, `worker_ssh`, `worker_container`, and `worker_user_id`).
+2. Run `legends-gohighlevel doctor` (offline runtime check) and `legends-gohighlevel agency-config` (checks `~/.config/legends-gohighlevel/agency.json` for `company_id`, `worker_ssh`, `worker_container`, and `worker_user_id`, plus `GHL_TOKEN_ID`). Never read or scan local desktop browser profile folders (`AppData\Local\Google\Chrome`, `Edge`, `Brave`, `IndexedDB`, `Cookies`, or `Login Data`).
 3. **For agency-wide investigations, sub-account feature flags, user permission errors, `+hubpro` alias sync, dashboard RBAC errors, Custom SMTP locks, or rebilling drift:**
    - Run `legends-gohighlevel live-audit` first. It extracts the live worker `token-id` from the worker container's IndexedDB (`/profile/Default/IndexedDB/https_app.gohighlevel.com_0.indexeddb.leveldb`) via SSH (never touch `/profile/Default/Cookies`) and audits all 5 governance layers across the entire agency:
      - **Layer 1 (40 location feature flags):** `legends-gohighlevel agency-locations` or `legends-gohighlevel agency-locations --location-id <locationId>`. To enable all 40 `location.permissions` boolean flags, preview `legends-gohighlevel location-unnerf --all-locations` and apply after approval with `--apply --confirm-plan <sha256>`.

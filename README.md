@@ -74,7 +74,7 @@ legends-gohighlevel conversations --limit 20
 
 ## Live 5-layer agency, user scope, dashboard RBAC, SMTP, and rebilling control
 
-For live agency governance over `backend.leadconnectorhq.com`, configure `~/.config/legends-gohighlevel/agency.json` (with `company_id`, plus either `local_indexeddb_path` for a local Chrome/Brave/Edge profile or `worker_ssh` + `worker_container` for a remote worker) or set `GHL_TOKEN_ID` in the environment:
+For live agency governance over `backend.leadconnectorhq.com`, set `GHL_TOKEN_ID` in the environment or configure `~/.config/legends-gohighlevel/agency.json` (with `company_id`, `worker_ssh`, `worker_container`, and `worker_user_id` for a remote headless worker):
 
 ```sh
 legends-gohighlevel agency-config
@@ -180,7 +180,7 @@ cto-legends run legends-gohighlevel -- doctor
 Operator / Agent
   -> legends-gohighlevel CLI (sub-account plane + agency governance plane)
   -> Sub-account API v2 & Workflows v3 (services.leadconnectorhq.com via GHL_PIT / config.json)
-  -> Internal agency backend (backend.leadconnectorhq.com via GHL_TOKEN_ID / IndexedDB)
+  -> Internal agency backend (backend.leadconnectorhq.com via GHL_TOKEN_ID / remote worker_ssh)
   -> Plan builder (before-state snapshot + proposed payload + SHA-256 hash)
   -> Explicit confirmation (--apply --confirm-location/--confirm-user --confirm-plan)
   -> Single write request + immediate post-write API readback verification

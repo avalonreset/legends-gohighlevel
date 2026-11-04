@@ -37,6 +37,8 @@ def main():
                 errors.append("Private host reference: " + relative.as_posix())
             if "\u2014" in text or "\u2013" in text:
                 errors.append("Forbidden em/en dash in: " + relative.as_posix())
+            if re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffd]", text):
+                errors.append("Forbidden control or replacement char in: " + relative.as_posix())
             if path.suffix == ".md":
                 for link in re.findall(r"\]\(([^)\s]+)\)", text):
                     if "://" in link or link.startswith(("#", "mailto:")):

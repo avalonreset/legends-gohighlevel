@@ -304,7 +304,6 @@ def load_agency_config() -> dict[str, Any]:
             file_cfg = {}
 
     company_id = os.environ.get("GHL_COMPANY_ID") or file_cfg.get("company_id") or ""
-    local_idb = os.environ.get("GHL_LOCAL_INDEXEDDB_PATH") or file_cfg.get("local_indexeddb_path") or ""
     worker_ssh = os.environ.get("GHL_WORKER_SSH") or file_cfg.get("worker_ssh") or ""
     worker_container = (
         os.environ.get("GHL_WORKER_CONTAINER")
@@ -320,59 +319,10 @@ def load_agency_config() -> dict[str, Any]:
         "config_path": str(cfg_path),
         "config_file_present": cfg_path.is_file(),
         "company_id": str(company_id).strip(),
-        "local_indexeddb_path": str(local_idb).strip(),
         "worker_ssh": str(worker_ssh).strip(),
         "worker_container": str(worker_container).strip(),
         "worker_user_id": str(worker_user_id).strip(),
         "token_env_present": bool(os.environ.get("GHL_TOKEN_ID")),
-    }
-
-
-def extract_local_token_from_indexeddb(
-    *,
-    indexeddb_path: str,
-    worker_user_id: str = "",
-) -> dict[str, Any]:
-    """Extract the active Firebase token-id from a local Chromium IndexedDB directory."""
-    idb_dir = Path(indexeddb_path).expanduser().resolve()
-    if not idb_dir.is_dir():
-        raise HighLevelError(f"Local IndexedDB directory not found: {idb_dir}")
-    clean_user = worker_user_id.strip()
-    jwt_re = re.compile(r"eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}")
-    best_tok: str | None = None
-    best_exp = 0
-    best_user: str | None = None
-    for entry in idb_dir.iterdir():
-        if entry.suffix not in {".ldb", ".log"} or not entry.is_file():
-            continue
-        try:
-            text = entry.read_bytes().decode("latin1")
-        except OSError:
-            continue
-        for match in jwt_re.findall(text):
-            try:
-                seg = match.split(".")[1]
-                padded = seg + "=" * (-len(seg) % 4)
-                payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
-                if "securetoken.google.com" not in str(payload.get("iss", "")):
-                    continue
-                uid = str(payload.get("user_id") or payload.get("sub") or "")
-                if clean_user and uid != clean_user:
-                    continue
-                exp = int(payload.get("exp") or 0)
-                if exp > best_exp:
-                    best_exp = exp
-                    best_tok = match
-                    best_user = uid or None
-            except Exception:
-                continue
-    if not best_tok:
-        raise HighLevelError("No active Firebase ID token found in local IndexedDB directory.")
-    return {
-        "token": _valid_token(best_tok, env_hint="GHL_TOKEN_ID"),
-        "exp": best_exp,
-        "user_id": best_user,
-        "source": f"local_indexeddb:{idb_dir}",
     }
 
 
@@ -573,29 +523,18 @@ class BackendClient:
         self.company_id = valid_id(raw_company) if raw_company else ""
 
         raw_tok = token_id if token_id is not None else os.environ.get("GHL_TOKEN_ID")
-        local_idb = cfg.get("local_indexeddb_path", "")
         if raw_tok:
             self.token_id = _valid_token(raw_tok, env_hint="GHL_TOKEN_ID")
             self.token_source = "env:GHL_TOKEN_ID"
             self.token_exp = None
             self.worker_user_id = worker_user_id or cfg["worker_user_id"] or None
-        elif local_idb and not worker_ssh:
-            user_id = worker_user_id if worker_user_id is not None else cfg["worker_user_id"]
-            extracted = extract_local_token_from_indexeddb(
-                indexeddb_path=local_idb,
-                worker_user_id=user_id,
-            )
-            self.token_id = extracted["token"]
-            self.token_source = extracted["source"]
-            self.token_exp = extracted.get("exp")
-            self.worker_user_id = extracted.get("user_id") or user_id or None
         else:
             ssh_target = worker_ssh if worker_ssh is not None else cfg["worker_ssh"]
             container = worker_container if worker_container is not None else cfg["worker_container"]
             user_id = worker_user_id if worker_user_id is not None else cfg["worker_user_id"]
             if not ssh_target:
                 raise HighLevelError(
-                    "Set GHL_TOKEN_ID in the environment or configure local_indexeddb_path / worker_ssh in "
+                    "Set GHL_TOKEN_ID in the environment or configure worker_ssh in "
                     "~/.config/legends-gohighlevel/agency.json."
                 )
             extracted = extract_worker_token_via_ssh(
