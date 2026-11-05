@@ -159,7 +159,7 @@ Start at [wiki/index.md](wiki/index.md) or attach the versioned knowledge pack a
 
 Use [the Empire integration guide](docs/EMPIRE.md) to keep private workspace inventories, change receipts, and un-nerf audits in an existing project. Installing the module never modifies a personal vault automatically.
 
-## CTO Legends router
+## Agent setup (via `cto-legends`)
 
 The module recipe is [docs/AGENT-RECIPE.md](docs/AGENT-RECIPE.md). The vendored `skills/cto-legends/SKILL.md` is an unchanged copy of the central router. Do not register a separate GoHighLevel skill.
 

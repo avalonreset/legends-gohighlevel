@@ -1,8 +1,8 @@
 # Release readiness
 
-Release: `legends-gohighlevel` 0.3.0. Release date: 2026-10-31.
+Release: `legends-gohighlevel` 0.3.2. Release date: 2026-11-05.
 
-Status: `0.3.0` verified across offline unit tests (`tests/test_gohighlevel.py` and `tests/test_social_x_bridge.py`), clean-environment wheel/sdist installation, `legends-empire` `0.3.2` knowledge-pack attachment (preview, apply, repeat noop, and conflict refusal), live GoHighLevel API v2 and v3 sub-account read/write verification (`subaccount-audit`, disposable `tag`, `contact`, `note`, and `custom-value` round trips), and live 5-layer agency audit and remediation across all 23 sub-accounts and 16 users (`ok: true`, `issue_count: 0`).
+Status: `0.3.2` verified across offline unit tests (`tests/test_gohighlevel.py` and `tests/test_social_x_bridge.py`), clean-environment wheel/sdist installation, `legends-empire` `0.3.2` knowledge-pack attachment (preview, apply, repeat noop, and conflict refusal), live GoHighLevel API v2 and v3 sub-account read/write verification (`subaccount-audit`, disposable `tag`, `contact`, `note`, and `custom-value` round trips), and live 5-layer agency audit and remediation across all 23 sub-accounts and 16 users (`ok: true`, `issue_count: 0`).
 
 | Gate | State |
 |---|---|

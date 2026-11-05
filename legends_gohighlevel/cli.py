@@ -86,21 +86,34 @@ from .social import (
 )
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+def _repo_root(anchor: Path | None = None) -> Path:
+    here = (anchor or Path(__file__)).resolve().parent
+    data_dir = here / "_data"
+    if (data_dir / "docs" / "AGENT-RECIPE.md").is_file() and (data_dir / "knowledge" / "gohighlevel" / "pack.json").is_file():
+        return data_dir
+    return here.parent
 
 
-def resolve_resources() -> dict:
-    root = _repo_root()
+def resolve_resources(anchor: Path | None = None) -> dict:
+    here = (anchor or Path(__file__)).resolve().parent
+    root = _repo_root(anchor=anchor)
+    source = "package_data" if root == (here / "_data").resolve() else "checkout"
     candidates = {
         "agent_recipe": root / "docs" / "AGENT-RECIPE.md",
         "wiki_index": root / "wiki" / "index.md",
         "knowledge_pack": root / "knowledge" / "gohighlevel" / "pack.json",
         "sources": root / "references" / "sources.md",
     }
+    complete = all(v.is_file() for v in candidates.values())
     return {
+        "ok": complete,
         "module": "legends-gohighlevel",
         "version": __version__,
+        "source": source,
+        "root": str(root),
+        "recipe": str(candidates["agent_recipe"]),
+        "pack_manifest": str(candidates["knowledge_pack"]),
+        "complete": complete,
         "paths": {k: str(v) for k, v in candidates.items() if v.exists()},
     }
 

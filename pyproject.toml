@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "legends-gohighlevel"
-version = "0.3.1"
+version = "0.3.2"
 description = "GoHighLevel CRM, agency backend, and sub-account governance CLI with preview-first mutations, API readback, live 5-layer permission, dashboard RBAC, SMTP, and rebilling audits, Workflows v3, Voice/Conversation AI, and a source-cited knowledge vault."
 requires-python = ">=3.11"
 license = "MIT"

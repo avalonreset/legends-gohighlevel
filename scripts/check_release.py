@@ -1,71 +1,223 @@
-"""Check public source hygiene, knowledge pack hashes, and local Markdown links without network calls."""
+"""Offline release checks for links, private residue, EDR hygiene, and required artifacts."""
+from __future__ import annotations
+
+import argparse
 import hashlib
 import json
 from pathlib import Path
 import re
+import struct
 import sys
+from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
-EXCLUDE = {".git", "__pycache__", "build", "dist", ".venv", ".github-audit"}
+SKIP = {".git", ".venv", "dist", "build", "__pycache__", ".github-audit", ".integration"}
+REQUIRED = [
+    ".legends-module",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "THIRD_PARTY_NOTICES.md",
+    "CITATION.cff",
+    "AGENTS.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "CHANGELOG.md",
+    "MANIFEST.in",
+    "pyproject.toml",
+    "setup.py",
+    "wiki/index.md",
+    "references/sources.md",
+    "docs/AGENT-RECIPE.md",
+    "docs/EMPIRE.md",
+    "docs/RELEASE-READINESS.md",
+    "docs/router-provenance.json",
+    "docs/catalog-entry.candidate.json",
+    "skills/cto-legends/SKILL.md",
+    "knowledge/gohighlevel/pack.json",
+    "knowledge/gohighlevel/vault/index.md",
+    "assets/manifest.json",
+    "assets/banner.png",
+    "assets/banner.webp",
+    "assets/preview.png",
+    "assets/social-preview.png",
+    "scripts/smoke_installed_resources.py",
+    "scripts/verify_knowledge_attachment.py",
+    ".github/workflows/checks.yml",
+]
+TEXT_SUFFIXES = {".md", ".py", ".json", ".toml", ".yml", ".in", ".txt", ".cfg", ".ini", ".cff"}
+FORBIDDEN = [
+    r"(?i)[a-z]:\\users\\",
+    r"(?i)\.tail[a-z0-9]+\.ts\.net",
+    r"(?i)sk_live_[a-z0-9]{12,}",
+    r"(?i)rk_live_[a-z0-9]{12,}",
+    r"gh[pousr]_[A-Za-z0-9]{20,}",
+    r"-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----",
+    r"CREATE_NO_WINDOW",
+    r"0x08000000",
+    r"(?i)-WindowStyle\s+Hidden",
+    r"(?i)-ExecutionPolicy\s+Bypass",
+    r"ctypes\.windll",
+    r"(?i)CryptUnprotectData",
+    r"(?i)GetAsyncKeyState",
+    r"(?i)(?:[ce]:[\\/](?:users|empire|legends-)|ctolegends\.com)",
+]
+FORBIDDEN_FILES = {".pem", ".key", ".p12", ".pfx", ".ps1", ".bat", ".cmd", ".vbs", ".ahk", ".ttf", ".otf"}
+PNG_METADATA_CHUNKS = {"tEXt", "iTXt", "zTXt", "eXIf"}
+WEBP_METADATA_CHUNKS = {b"EXIF", b"XMP "}
+MARKDOWN_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
 
-def main():
-    errors = []
-    required = [
-        "LICENSE", "README.md", "SECURITY.md", "THIRD_PARTY_NOTICES.md",
-        "docs/AGENT-RECIPE.md", "wiki/index.md", "references/sources.md",
-        "knowledge/gohighlevel/pack.json", "knowledge/gohighlevel/vault/index.md",
-        "skills/cto-legends/SKILL.md", "assets/banner.webp", "assets/social-preview.png",
-        "docs/catalog-entry.candidate.json", "docs/RELEASE-READINESS.md",
-    ]
-    for rel in required:
-        if not (ROOT / rel).is_file():
-            errors.append("Missing " + rel)
-    for path in ROOT.rglob("*"):
-        relative = path.relative_to(ROOT)
-        if any(p in EXCLUDE or p.endswith(".egg-info") for p in relative.parts):
-            continue
-        if path.is_symlink():
-            errors.append("Symlink: " + relative.as_posix())
-        if not path.is_file():
-            continue
-        if path.name == ".env" or path.suffix.lower() in {".pem", ".key", ".ttf", ".otf"}:
-            errors.append("Forbidden public file: " + relative.as_posix())
-        if path.suffix in {".md", ".py", ".json", ".toml", ".yml"} and relative.as_posix() != "scripts/check_release.py":
-            text = path.read_text(encoding="utf-8")
-            if re.search(r"(?i)(?:[ce]:[\\/](?:users|empire|legends-)|ctolegends\.com)", text):
-                errors.append("Private host reference: " + relative.as_posix())
-            if "\u2014" in text or "\u2013" in text:
-                errors.append("Forbidden em/en dash in: " + relative.as_posix())
-            if re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffd]", text):
-                errors.append("Forbidden control or replacement char in: " + relative.as_posix())
-            if path.suffix == ".md":
-                for link in re.findall(r"\]\(([^)\s]+)\)", text):
-                    if "://" in link or link.startswith(("#", "mailto:")):
-                        continue
-                    target = link.split("#", 1)[0]
-                    if target and not (path.parent / target).exists():
-                        errors.append(f"Broken link in {relative}: {link}")
-    router = ROOT / "skills/cto-legends/SKILL.md"
-    if router.exists():
-        expected = json.loads((ROOT / "docs/router-provenance.json").read_text(encoding="utf-8"))["sha256"]
+def image_metadata_issues(path: Path) -> list[str]:
+    """Flag raster metadata chunks that can carry authoring residue."""
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return [f"Cannot read image: {path}"]
+    issues: list[str] = []
+    suffix = path.suffix.lower()
+    if suffix == ".png":
+        if raw[:8] != b"\x89PNG\r\n\x1a\n":
+            return [f"Not a PNG file: {path}"]
+        offset = 8
+        while offset + 8 <= len(raw):
+            length = struct.unpack(">I", raw[offset : offset + 4])[0]
+            chunk = raw[offset + 4 : offset + 8]
+            try:
+                name = chunk.decode("latin1")
+            except UnicodeError:
+                break
+            if name in PNG_METADATA_CHUNKS:
+                issues.append(f"Image metadata chunk {name} in {path.name}; strip authoring residue.")
+            if name == "IEND":
+                break
+            offset += 12 + length
+    elif suffix == ".webp":
+        if raw[:4] != b"RIFF" or raw[8:12] != b"WEBP":
+            return [f"Not a WebP file: {path}"]
+        offset = 12
+        while offset + 8 <= len(raw):
+            tag = raw[offset : offset + 4]
+            length = struct.unpack("<I", raw[offset + 4 : offset + 8])[0]
+            if tag in WEBP_METADATA_CHUNKS:
+                issues.append(f"Image metadata chunk {tag!r} in {path.name}; strip authoring residue.")
+                break
+            offset += 8 + length + (length % 2)
+    return issues
+
+
+def check(root: Path = ROOT) -> list[str]:
+    errors: list[str] = []
+    for name in REQUIRED:
+        if not (root / name).is_file():
+            errors.append(f"Missing required file: {name}")
+
+    skills_dir = root / "skills"
+    if skills_dir.is_dir():
+        skill_files = [
+            p.relative_to(skills_dir).as_posix()
+            for p in skills_dir.rglob("*")
+            if p.is_file()
+        ]
+        if skill_files != ["cto-legends/SKILL.md"]:
+            errors.append(f"One-skill rule violation under skills/: {skill_files}")
+
+    manifest = root / "assets" / "manifest.json"
+    if manifest.is_file():
+        try:
+            entries = json.loads(manifest.read_text(encoding="utf-8-sig"))["files"]
+        except (ValueError, KeyError):
+            errors.append("assets/manifest.json is not a manifest with files.")
+            entries = []
+        for entry in entries:
+            target = root / "assets" / entry.get("name", "")
+            try:
+                raw = target.read_bytes()
+            except OSError:
+                errors.append(f"Manifest asset missing: {entry.get('name')}")
+                continue
+            if len(raw) != entry.get("bytes"):
+                errors.append(f"Manifest byte mismatch: {entry.get('name')}")
+            if hashlib.sha256(raw).hexdigest() != entry.get("sha256"):
+                errors.append(f"Manifest hash mismatch: {entry.get('name')}")
+
+    router = root / "skills" / "cto-legends" / "SKILL.md"
+    prov_path = root / "docs" / "router-provenance.json"
+    if router.is_file() and prov_path.is_file():
+        expected = json.loads(prov_path.read_text(encoding="utf-8-sig"))["sha256"]
         if hashlib.sha256(router.read_bytes()).hexdigest() != expected:
             errors.append("Router differs from its recorded canonical source.")
-    pack_path = ROOT / "knowledge/gohighlevel/pack.json"
-    if pack_path.exists():
-        pack = json.loads(pack_path.read_text(encoding="utf-8"))
-        if pack.get("schema") != "legends.knowledge-pack/v1" or pack.get("module") != "legends-gohighlevel":
-            errors.append("Knowledge pack schema or module invalid.")
-        vault_dir = ROOT / "knowledge/gohighlevel/vault"
-        for item in pack.get("files", []):
-            target = vault_dir / item["path"]
-            if not target.is_file():
-                errors.append(f"Missing knowledge pack file: {item['path']}")
-            elif hashlib.sha256(target.read_bytes()).hexdigest() != item["sha256"]:
-                errors.append(f"Knowledge pack hash mismatch: {item['path']}")
-    print(json.dumps({"ok": not errors, "errors": errors}, indent=2))
-    return bool(errors)
+
+    init_path = root / "legends_gohighlevel" / "__init__.py"
+    pkg_version = None
+    if init_path.is_file():
+        m = re.search(r'__version__\s*=\s*"([^"]+)"', init_path.read_text(encoding="utf-8-sig"))
+        if m:
+            pkg_version = m.group(1)
+
+    pack_path = root / "knowledge" / "gohighlevel" / "pack.json"
+    if pack_path.is_file():
+        try:
+            pack = json.loads(pack_path.read_text(encoding="utf-8-sig"))
+            if pack.get("schema") != "legends.knowledge-pack/v1" or pack.get("module") != "legends-gohighlevel":
+                errors.append("Knowledge pack schema or module invalid.")
+            if pkg_version and pack.get("version") != pkg_version:
+                errors.append(f"Knowledge pack version ({pack.get('version')}) != package version ({pkg_version})")
+            vault_dir = pack_path.parent / "vault"
+            for f_entry in pack.get("files", []):
+                v_target = vault_dir / f_entry.get("path", "")
+                if not v_target.is_file():
+                    errors.append(f"Pack file missing: {f_entry.get('path')}")
+                elif hashlib.sha256(v_target.read_bytes()).hexdigest() != f_entry.get("sha256"):
+                    errors.append(f"Pack file hash mismatch: {f_entry.get('path')}")
+        except Exception as exc:
+            errors.append(f"Invalid knowledge/gohighlevel/pack.json: {exc}")
+
+    for path in root.rglob("*"):
+        rel = path.relative_to(root)
+        if any(p in SKIP or p.endswith(".egg-info") for p in rel.parts):
+            continue
+        if path.is_symlink():
+            errors.append(f"Symlink not allowed: {rel}")
+            continue
+        if not path.is_file():
+            continue
+        if path.name == ".env" or path.suffix.lower() in FORBIDDEN_FILES:
+            errors.append(f"Forbidden file extension must not ship: {rel}")
+            continue
+        if path.suffix.lower() in {".png", ".webp"}:
+            errors.extend(f"{rel}: {issue}" for issue in image_metadata_issues(path))
+            continue
+        if path.suffix not in TEXT_SUFFIXES and path.name not in {"LICENSE", "NOTICE", ".legends-module"}:
+            continue
+        text = path.read_text(encoding="utf-8-sig")
+        if path.name != "check_release.py":
+            for pattern in FORBIDDEN:
+                if re.search(pattern, text):
+                    errors.append(f"Possible private or EDR-sensitive residue ({pattern}): {rel}")
+            if "\u2014" in text or "\u2013" in text:
+                errors.append(f"Disallowed dash in copy: {rel}")
+            if re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffd]", text):
+                errors.append(f"Forbidden control or replacement char in: {rel}")
+        if path.suffix != ".md":
+            continue
+        for target_link in MARKDOWN_LINK_RE.findall(text):
+            if target_link.startswith(("https://", "http://", "mailto:", "#")):
+                continue
+            cleaned = unquote(target_link.split("#", 1)[0].split("?", 1)[0])
+            resolved = (path.parent / cleaned).resolve()
+            if not resolved.is_relative_to(root.resolve()) or not resolved.exists():
+                errors.append(f"Broken or external local link: {rel}: {target_link}")
+    return errors
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    parser = argparse.ArgumentParser(description="Offline release checks.")
+    parser.add_argument("--root", type=Path, default=ROOT)
+    options = parser.parse_args()
+    failures = check(options.root)
+    print(json.dumps({"ok": not failures, "errors": failures}, indent=2))
+    print(f"Release checks: {'FAIL' if failures else 'PASS'} ({len(failures)} issues)")
+    sys.exit(bool(failures))

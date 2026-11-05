@@ -2,7 +2,7 @@
   "schema": "legends.knowledge-pack/v1",
   "id": "gohighlevel",
   "module": "legends-gohighlevel",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "entrypoint": "index.md",
   "files": [
     {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2 (2026-11-05)
+
+- Added `setup.py` build-time wheel data mirror (`legends_gohighlevel/_data/`), `.legends-module`, `assets/manifest.json`, `scripts/smoke_installed_resources.py`, and `scripts/verify_knowledge_attachment.py` so standalone wheel installs resolve all knowledge packs, recipes, and references outside a source checkout.
+- Updated `resolve_resources()` in `legends_gohighlevel/cli.py` to check `legends_gohighlevel/_data` first and aligned `knowledge/gohighlevel/pack.json` version with the package release.
+- Upgraded `scripts/check_release.py` and `.github/workflows/checks.yml` with Gold-Standard EDR/metadata/dash gates and multi-OS `empire-attachment` CI verification.
+
 ## 0.3.1 (2026-11-04)
 
 - **Endpoint Security (EDR) Hardening (`legends_gohighlevel/api.py`, `AGENTS.md`, `docs/AGENT-RECIPE.md`, `README.md`, `docs/catalog-entry.candidate.json`):** Removed local desktop browser `IndexedDB` directory scraping (`extract_local_token_from_indexeddb` and `local_indexeddb_path`) and added explicit agent guardrails prohibiting local Chrome, Brave, or Edge profile directory access so Python processes never trigger endpoint infostealer heuristics on Windows or macOS workstations. `BackendClient` resolves `token-id` strictly from `GHL_TOKEN_ID` or remote headless container `worker_ssh`.
