@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -45,6 +46,8 @@ ALLOWED_PATHS = (
     re.compile(r"/workflows/[A-Za-z0-9_-]{8,64}(?:/(?:definition|status|logs|logs/aggregate))?\Z"),
     re.compile(r"/forms/\Z"),
     re.compile(r"/surveys/\Z"),
+    re.compile(r"/emails/builder\Z"),
+    re.compile(r"/links/\Z"),
     re.compile(r"/funnels/funnel/list\Z"),
     re.compile(r"/funnels/page(?:/count)?\Z"),
     re.compile(r"/funnels/lookup/redirect/list\Z"),
@@ -64,6 +67,7 @@ ALLOWED_PATHS = (
 
 ALLOWED_BACKEND_PATHS = (
     re.compile(r"/companies/[A-Za-z0-9_-]{8,64}\Z"),
+    re.compile(r"/locations/?\Z"),
     re.compile(r"/locations/search\Z"),
     re.compile(r"/locations/[A-Za-z0-9_-]{8,64}\Z"),
     re.compile(r"/locations/[A-Za-z0-9_-]{8,64}/customFields(?:/[A-Za-z0-9_-]{8,64})?\Z"),
@@ -80,6 +84,30 @@ ALLOWED_BACKEND_PATHS = (
     re.compile(r"/calendars/[A-Za-z0-9_-]{8,64}(?:/free-slots)?\Z"),
     re.compile(r"/workflows/\Z"),
     re.compile(r"/workflows/[A-Za-z0-9_-]{8,64}\Z"),
+    re.compile(r"/workflow/[A-Za-z0-9_-]{8,64}/list\Z"),
+    re.compile(r"/workflow/[A-Za-z0-9_-]{8,64}/change-status(?:/[A-Za-z0-9_-]{8,64})?\Z"),
+    re.compile(r"/workflow/[A-Za-z0-9_-]{8,64}/[A-Za-z0-9_-]{8,64}(?:/copy-workflow)?\Z"),
+    re.compile(r"/forms/\Z"),
+    re.compile(r"/surveys/\Z"),
+    re.compile(r"/emails/builder\Z"),
+    re.compile(r"/links/\Z"),
+    re.compile(r"/funnels/funnel/list\Z"),
+    re.compile(r"/snapshots/v2/[A-Za-z0-9_-]{8,64}\Z"),
+    re.compile(r"/snapshots/snapshotDetails/[A-Za-z0-9_-]{8,64}\Z"),
+    re.compile(r"/snapshots/[A-Za-z0-9_-]{8,64}/assets(?:-status)?\Z"),
+    re.compile(r"/snapshots/assets/asset-names\Z"),
+    re.compile(r"/snapshots/v2/preFetchAssets/[A-Za-z0-9_-]{8,64}\Z"),
+    re.compile(r"/snapshots/preFetchAssets/[A-Za-z0-9_-]{8,64}\Z"),
+    re.compile(r"/snapshots/[A-Za-z0-9_-]{8,64}/ip-assets\Z"),
+    re.compile(r"/snapshots/create\Z"),
+    re.compile(r"/snapshots/[A-Za-z0-9_-]{8,64}/refresh\Z"),
+    re.compile(r"/snapshots/[A-Za-z0-9_-]{8,64}/update\Z"),
+    re.compile(r"/snapshots/[A-Za-z0-9_-]{8,64}/conflicts\Z"),
+    re.compile(r"/snapshots/snapshot-push/v2/[A-Za-z0-9_-]{8,64}/set_assets_to_locations\Z"),
+    re.compile(r"/snapshots/snapshot-push/[A-Za-z0-9_-]{8,64}/push-in-progress\Z"),
+    re.compile(r"/snapshots/push-batch/v2/[A-Za-z0-9_-]{8,64}/batches\Z"),
+    re.compile(r"/snapshots/locations/[A-Za-z0-9_-]{8,64}/snapshot-history\Z"),
+    re.compile(r"/snapshots/share/v2/link\Z"),
     re.compile(r"/oauth/static/scopes\Z"),
     re.compile(r"/marketplace/private-integration/location/[A-Za-z0-9_-]{8,64}(?:/[A-Za-z0-9_-]{8,64})?\Z"),
     re.compile(r"/users/search\Z"),
@@ -97,7 +125,8 @@ ALLOWED_BACKEND_PATHS = (
     re.compile(r"/conversations/providers/mailgun(?:/(?:fetch|fetch/domain|validations))?\Z"),
     re.compile(r"/saas-billing-v2/billing-config/LOCATION/[A-Za-z0-9_-]{8,64}\Z"),
     re.compile(r"/saas-billing-v2/billing-config/group/[A-Za-z0-9_-]{8,64}/[A-Za-z0-9_,-]{3,400}\Z"),
-    re.compile(r"/saas_service/saas-config/[A-Za-z0-9_-]{8,64}/update-(?:twilio|mailgun)-rebilling\Z"),
+    re.compile(r"/saas_service/saas-config/[A-Za-z0-9_-]{8,64}/(?:update-(?:twilio|mailgun)-rebilling|enable-saas)\Z"),
+    re.compile(r"/saas-api/saas-config/allow-attach-rebilling/[A-Za-z0-9_-]{8,64}\Z"),
     re.compile(r"/saas-api/location-metadata/[A-Za-z0-9_-]{8,64}\Z"),
     re.compile(r"/internal-tools/billing/company-info/[A-Za-z0-9_-]{8,64}\Z"),
     re.compile(r"/internal-tools/billing/customer(?:/billing-details)?\Z"),
@@ -106,6 +135,7 @@ ALLOWED_BACKEND_PATHS = (
 )
 
 ALLOWED_BACKEND_WRITE_PATHS = (
+    re.compile(r"/locations/?\Z"),
     re.compile(r"/locations/[A-Za-z0-9_-]{8,64}\Z"),
     re.compile(r"/locations/[A-Za-z0-9_-]{8,64}/customFields(?:/[A-Za-z0-9_-]{8,64})?\Z"),
     re.compile(r"/locations/[A-Za-z0-9_-]{8,64}/customValues(?:/[A-Za-z0-9_-]{8,64})?\Z"),
@@ -120,6 +150,14 @@ ALLOWED_BACKEND_WRITE_PATHS = (
     re.compile(r"/calendars/[A-Za-z0-9_-]{8,64}\Z"),
     re.compile(r"/workflows/\Z"),
     re.compile(r"/workflows/[A-Za-z0-9_-]{8,64}\Z"),
+    re.compile(r"/workflow/[A-Za-z0-9_-]{8,64}/change-status(?:/[A-Za-z0-9_-]{8,64})?\Z"),
+    re.compile(r"/workflow/[A-Za-z0-9_-]{8,64}/[A-Za-z0-9_-]{8,64}/copy-workflow\Z"),
+    re.compile(r"/snapshots/create\Z"),
+    re.compile(r"/snapshots/[A-Za-z0-9_-]{8,64}/refresh\Z"),
+    re.compile(r"/snapshots/[A-Za-z0-9_-]{8,64}/update\Z"),
+    re.compile(r"/snapshots/[A-Za-z0-9_-]{8,64}/conflicts\Z"),
+    re.compile(r"/snapshots/snapshot-push/v2/[A-Za-z0-9_-]{8,64}/set_assets_to_locations\Z"),
+    re.compile(r"/snapshots/share/v2/link\Z"),
     re.compile(r"/marketplace/private-integration/location/[A-Za-z0-9_-]{8,64}(?:/[A-Za-z0-9_-]{8,64})?\Z"),
     re.compile(r"/users/[A-Za-z0-9_-]{8,64}\Z"),
     re.compile(r"/reporting/dashboards/[A-Za-z0-9_-]{8,64}/permissions\Z"),
@@ -130,7 +168,8 @@ ALLOWED_BACKEND_WRITE_PATHS = (
     re.compile(r"/email-isv/provider/mailgun(?:/(?:locations|domains|forwarding-address-settings|reply-address-settings))?\Z"),
     re.compile(r"/conversations/providers/mailgun(?:/validations)?\Z"),
     re.compile(r"/saas-billing-v2/billing-config/group/[A-Za-z0-9_-]{8,64}/[A-Za-z0-9_,-]{3,400}\Z"),
-    re.compile(r"/saas_service/saas-config/[A-Za-z0-9_-]{8,64}/update-(?:twilio|mailgun)-rebilling\Z"),
+    re.compile(r"/saas_service/saas-config/[A-Za-z0-9_-]{8,64}/(?:update-(?:twilio|mailgun)-rebilling|enable-saas)\Z"),
+    re.compile(r"/saas-api/saas-config/allow-attach-rebilling/[A-Za-z0-9_-]{8,64}\Z"),
     re.compile(r"/saas-api/location-metadata/[A-Za-z0-9_-]{8,64}\Z"),
     re.compile(r"/internal-tools/billing/customer/billing-details\Z"),
     re.compile(r"/internal-tools/billing/update-tax\Z"),
@@ -326,6 +365,19 @@ def load_agency_config() -> dict[str, Any]:
     }
 
 
+def _jwt_payload(token: str | None) -> dict[str, Any]:
+    if not token or token.count(".") != 2:
+        return {}
+    try:
+        mid = token.split(".")[1]
+        padded = mid + "=" * (-len(mid) % 4)
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+        obj = json.loads(decoded)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
 def extract_worker_token_via_ssh(
     *,
     worker_ssh: str,
@@ -344,18 +396,21 @@ def extract_worker_token_via_ssh(
         raise HighLevelError("Invalid worker user ID format.")
 
     remote_cmd = f"docker exec -i -e GHL_TARGET_USER_ID={clean_user} {clean_container} node -"
-    try:
-        proc = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", clean_ssh, remote_cmd],
-            input=_WORKER_INDEXEDDB_SCRIPT,
-            text=True,
-            capture_output=True,
-            timeout=25,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise HighLevelError(f"Failed to execute SSH worker token extraction: {exc}") from None
 
+    def _run_extract() -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", clean_ssh, remote_cmd],
+                input=_WORKER_INDEXEDDB_SCRIPT,
+                text=True,
+                capture_output=True,
+                timeout=25,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise HighLevelError(f"Failed to execute SSH worker token extraction: {exc}") from None
+
+    proc = _run_extract()
     if proc.returncode != 0:
         raise HighLevelError(
             "Worker IndexedDB token extraction failed; verify SSH connectivity and container status."
@@ -364,6 +419,32 @@ def extract_worker_token_via_ssh(
         parsed = json.loads(proc.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):
         raise HighLevelError("Worker IndexedDB token helper returned invalid JSON.") from None
+
+    exp_val = parsed.get("exp")
+    if isinstance(exp_val, (int, float)) and exp_val <= time.time() + 120:
+        try:
+            subprocess.run(
+                [
+                    "ssh",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ConnectTimeout=10",
+                    clean_ssh,
+                    "curl -fsS --max-time 15 http://127.0.0.1:18901/health >/dev/null 2>&1 || true",
+                ],
+                text=True,
+                capture_output=True,
+                timeout=20,
+                check=False,
+            )
+            proc2 = _run_extract()
+            if proc2.returncode == 0:
+                parsed2 = json.loads(proc2.stdout.strip().splitlines()[-1])
+                if isinstance(parsed2, dict) and parsed2.get("token"):
+                    parsed = parsed2
+        except Exception:
+            pass
 
     tok = _valid_token(str(parsed.get("token", "")), env_hint="GHL_TOKEN_ID")
     return {
@@ -523,15 +604,29 @@ class BackendClient:
         self.company_id = valid_id(raw_company) if raw_company else ""
 
         raw_tok = token_id if token_id is not None else os.environ.get("GHL_TOKEN_ID")
-        if raw_tok:
+        ssh_target = worker_ssh if worker_ssh is not None else cfg["worker_ssh"]
+        container = worker_container if worker_container is not None else cfg["worker_container"]
+        user_id = worker_user_id if worker_user_id is not None else cfg["worker_user_id"]
+
+        use_raw_tok = bool(raw_tok)
+        jwt_claims = _jwt_payload(raw_tok) if raw_tok else {}
+        jwt_exp = jwt_claims.get("exp")
+        if (
+            token_id is None
+            and use_raw_tok
+            and isinstance(jwt_exp, (int, float))
+            and jwt_exp <= time.time() + 120
+            and ssh_target
+        ):
+            use_raw_tok = False
+
+        if use_raw_tok:
             self.token_id = _valid_token(raw_tok, env_hint="GHL_TOKEN_ID")
             self.token_source = "env:GHL_TOKEN_ID"
-            self.token_exp = None
-            self.worker_user_id = worker_user_id or cfg["worker_user_id"] or None
+            self.token_exp = int(jwt_exp) if isinstance(jwt_exp, (int, float)) else None
+            jwt_uid = str(jwt_claims.get("user_id") or jwt_claims.get("sub") or "").strip()
+            self.worker_user_id = user_id or jwt_uid or None
         else:
-            ssh_target = worker_ssh if worker_ssh is not None else cfg["worker_ssh"]
-            container = worker_container if worker_container is not None else cfg["worker_container"]
-            user_id = worker_user_id if worker_user_id is not None else cfg["worker_user_id"]
             if not ssh_target:
                 raise HighLevelError(
                     "Set GHL_TOKEN_ID in the environment or configure worker_ssh in "
@@ -566,9 +661,9 @@ class BackendClient:
     ) -> dict:
         if not self._allowed_path(path):
             raise HighLevelError(f"Unsupported HighLevel backend path: {path}")
-        if method not in {"GET", "POST", "PUT", "DELETE"}:
+        if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
             raise HighLevelError("Unsupported HTTP method for internal backend.")
-        if method in {"POST", "PUT", "DELETE"} and not self._allowed_write_path(path):
+        if method in {"POST", "PUT", "PATCH", "DELETE"} and not self._allowed_write_path(path):
             raise HighLevelError("Write method is restricted to reviewed agency/dashboard governance endpoints.")
 
         url = BACKEND_ROOT + path
@@ -589,6 +684,8 @@ class BackendClient:
         if path.startswith("/internal-tools/"):
             headers["authorization"] = f"Bearer {self.token_id}"
             headers["source-id"] = "platform-billing"
+        elif path.startswith(("/snapshots/", "/workflow/", "/emails/", "/forms/", "/surveys/", "/funnels/", "/links/")):
+            headers["authorization"] = f"Bearer {self.token_id}"
         if data is not None:
             headers["Content-Type"] = "application/json"
 

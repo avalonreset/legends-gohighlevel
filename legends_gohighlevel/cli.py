@@ -9,29 +9,43 @@ import sys
 
 from . import __version__
 from .agency import (
+    apply_location_full_unnerf_plan,
     apply_location_rename_plan,
     apply_location_unnerf_plan,
     apply_rebilling_sync_plan,
     apply_smtp_unlock_plan,
+    apply_snapshot_create_plan,
+    apply_snapshot_push_plan,
+    apply_snapshot_refresh_plan,
     apply_unlock_dashboards_plan,
     apply_user_sync_locations_plan,
     apply_user_unnerf_plan,
+    apply_workflow_bulk_status_plan,
+    inspect_agency_snapshot,
     inspect_dashboard_permissions,
     inspect_email_domains,
+    inspect_location_clone_audit,
     inspect_rebilling_status,
     inspect_smtp_status,
     inspect_user,
     list_agency_locations,
+    list_agency_snapshots,
     list_agency_users,
+    list_location_workflows_backend,
     list_private_integrations,
     live_agency_audit,
+    make_location_full_unnerf_plan,
     make_location_rename_plan,
     make_location_unnerf_plan,
     make_rebilling_sync_plan,
     make_smtp_unlock_plan,
+    make_snapshot_create_plan,
+    make_snapshot_push_plan,
+    make_snapshot_refresh_plan,
     make_unlock_dashboards_plan,
     make_user_sync_locations_plan,
     make_user_unnerf_plan,
+    make_workflow_bulk_status_plan,
 )
 from .api import BackendClient, Client, HighLevelError, load_agency_config, load_subaccount_config
 from .crm import (
@@ -42,6 +56,7 @@ from .crm import (
     apply_opportunity_update_plan,
     apply_tag_plan,
     apply_workflow_status_plan,
+    inspect_profiles_matrix,
     inspect_workflow_definition,
     list_associations,
     list_calendar_free_slots,
@@ -49,12 +64,14 @@ from .crm import (
     list_conversation_ai_agents,
     list_custom_fields,
     list_custom_values,
+    list_email_templates,
     list_forms,
     list_funnels,
     list_objects,
     list_pipelines,
     list_surveys,
     list_tags,
+    list_trigger_links,
     list_voice_ai_agents,
     list_voice_ai_calls,
     list_workflow_logs,
@@ -73,6 +90,7 @@ from .crm import (
     search_object_records,
     search_opportunities,
     subaccount_audit,
+    subaccount_rebrand_audit,
     triage_conversations,
     validate_workflow_definition,
 )
@@ -375,6 +393,86 @@ def parser() -> argparse.ArgumentParser:
     live_aud.add_argument("--company-id")
     live_aud.add_argument("--markup", type=int, default=5)
 
+    ag_wfs = sub.add_parser("agency-workflows", help="List workflows on any sub-account via backend.leadconnectorhq.com with published/draft counts and CAPI/webhook risk flags.")
+    ag_wfs.add_argument("--location-id", required=True)
+    ag_wfs.add_argument("--company-id")
+
+    wf_bulk = sub.add_parser("workflow-bulk-status", help="Preview or apply bulk workflow status changes (draft/published) via PUT /workflow/:locationId/change-status.")
+    wf_bulk.add_argument("--location-id")
+    wf_bulk.add_argument("--location-ids", help="Comma-separated list of locationIds.")
+    wf_bulk.add_argument("--workflow-ids", help="Comma-separated list of workflowIds (omit to target all workflows in the location).")
+    wf_bulk.add_argument("--status", choices=["draft", "published"], required=True)
+    wf_bulk.add_argument("--all", action="store_true", help="Include workflows already in the target status.")
+    wf_bulk.add_argument("--company-id")
+    wf_bulk.add_argument("--apply", action="store_true")
+    wf_bulk.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    snaps_ls = sub.add_parser("snapshots-list", help="List agency snapshots via GET /snapshots/v2/:companyId.")
+    snaps_ls.add_argument("--company-id")
+    snaps_ls.add_argument("--type", choices=["own", "imported", "shared"], default="own")
+    snaps_ls.add_argument("--limit", type=int, default=50)
+
+    snap_insp = sub.add_parser("snapshot-inspect", help="Inspect a snapshot's 16-category asset inventory, dehydration state, and push batches.")
+    snap_insp.add_argument("--snapshot-id", required=True)
+    snap_insp.add_argument("--company-id")
+    snap_insp.add_argument("--type", choices=["own", "imported", "shared"], default="own")
+
+    snap_cr = sub.add_parser("snapshot-create", help="Preview or apply creating a new V2 agency snapshot from a source sub-account.")
+    snap_cr.add_argument("--name", required=True)
+    snap_cr.add_argument("--location-id", required=True)
+    snap_cr.add_argument("--company-id")
+    snap_cr.add_argument("--wait", action="store_true", help="Wait for snapshot dehydration to complete.")
+    snap_cr.add_argument("--timeout-seconds", type=int, default=90)
+    snap_cr.add_argument("--apply", action="store_true")
+    snap_cr.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    snap_ref = sub.add_parser("snapshot-refresh", help="Preview or apply refreshing an existing V2 agency snapshot from its linked source sub-account.")
+    snap_ref.add_argument("--snapshot-id", required=True)
+    snap_ref.add_argument("--company-id")
+    snap_ref.add_argument("--wait", action="store_true", help="Wait for snapshot refresh dehydration to complete.")
+    snap_ref.add_argument("--timeout-seconds", type=int, default=90)
+    snap_ref.add_argument("--apply", action="store_true")
+    snap_ref.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    snap_push = sub.add_parser("snapshot-push", help="Preview or apply pushing an agency V2 snapshot into one or more sub-accounts with optional post-push workflow drafting and dashboard unlocking.")
+    snap_push.add_argument("--snapshot-id", required=True)
+    snap_push.add_argument("--location-id")
+    snap_push.add_argument("--location-ids", help="Comma-separated list of target locationIds.")
+    snap_push.add_argument("--company-id")
+    snap_push.add_argument("--skip-conflicts", action="store_true", help="Skip conflicting assets instead of overwriting conflicts.")
+    snap_push.add_argument("--keep-workflow-status", action="store_true", help="Do not automatically bulk-switch target workflows to draft after push.")
+    snap_push.add_argument("--skip-unlock-dashboards", action="store_true", help="Do not automatically unlock target dashboards RBAC after push.")
+    snap_push.add_argument("--no-wait", action="store_true", help="Return immediately without polling push batch completion.")
+    snap_push.add_argument("--timeout-seconds", type=int, default=120)
+    snap_push.add_argument("--apply", action="store_true")
+    snap_push.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    loc_full = sub.add_parser("location-full-unnerf", help="Preview or apply a single 5-layer governance un-nerf (40 location flags, user scopes + alias, dashboards RBAC, Custom SMTP, and 4-store rebilling).")
+    loc_full.add_argument("--location-id")
+    loc_full.add_argument("--location-ids", help="Comma-separated list of locationIds.")
+    loc_full.add_argument("--user-id")
+    loc_full.add_argument("--email")
+    loc_full.add_argument("--company-id")
+    loc_full.add_argument("--markup", type=int, default=5)
+    loc_full.add_argument("--apply", action="store_true")
+    loc_full.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    loc_clone_aud = sub.add_parser("location-clone-audit", help="Deep-audit a cloned or existing sub-account via backend.leadconnectorhq.com for asset parity, workflow draft safety, governance health, and brand-term leaks.")
+    loc_clone_aud.add_argument("--location-id", required=True)
+    loc_clone_aud.add_argument("--company-id")
+    loc_clone_aud.add_argument("--brand-terms", help="Comma-separated list of source brand terms to scan for (e.g. webmakelij,intake).")
+
+    em_tmps = sub.add_parser("email-templates", help="List sub-account Email Builder templates via Official API v2.")
+    em_tmps.add_argument("--limit", type=int, default=100)
+
+    trig_lnks = sub.add_parser("trigger-links", help="List sub-account trigger links via Official API v2.")
+
+    sub_reb_aud = sub.add_parser("subaccount-rebrand-audit", help="Audit a sub-account via Official API v2 (GHL_PIT) for workflow draft state, integration risk workflows, empty custom values, and source brand terms.")
+    sub_reb_aud.add_argument("--brand-terms", help="Comma-separated list of source brand terms to scan for.")
+
+    prof_mat = sub.add_parser("profiles-matrix", help="Compare asset and workflow status across multiple configured sub-account profiles in ~/.config/legends-gohighlevel/config.json.")
+    prof_mat.add_argument("--profiles", help="Optional comma-separated list of profile names.")
+
     sub.add_parser("social-accounts", help="List connected Social Planner accounts for GHL_LOCATION_ID.")
 
     soc_posts = sub.add_parser("social-posts", help="List Social Planner posts for GHL_LOCATION_ID.")
@@ -439,11 +537,17 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
             current_permissions=cur_perms,
         )
 
+    if args.command == "profiles-matrix":
+        prof_list = [x.strip() for x in args.profiles.split(",") if x.strip()] if args.profiles else None
+        return inspect_profiles_matrix(profiles=prof_list, client_factory=client_factory)
+
     # Internal backend commands
     if args.command in {
         "agency-locations",
         "location-rename",
         "location-unnerf",
+        "location-full-unnerf",
+        "location-clone-audit",
         "agency-users",
         "user-inspect",
         "user-sync-locations",
@@ -457,6 +561,13 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
         "pit-list",
         "email-domains",
         "live-audit",
+        "agency-workflows",
+        "workflow-bulk-status",
+        "snapshots-list",
+        "snapshot-inspect",
+        "snapshot-create",
+        "snapshot-refresh",
+        "snapshot-push",
     }:
         if args.command == "location-rename":
             has_conf = bool(args.confirm_location or args.confirm_plan)
@@ -470,7 +581,17 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
                 raise HighLevelError("--apply requires --confirm-user and --confirm-plan.")
             if has_conf and not args.apply:
                 raise HighLevelError("Confirmation flags require --apply.")
-        if args.command in {"unlock-dashboards", "smtp-unlock", "location-unnerf", "rebilling-sync"}:
+        if args.command in {
+            "unlock-dashboards",
+            "smtp-unlock",
+            "location-unnerf",
+            "location-full-unnerf",
+            "rebilling-sync",
+            "workflow-bulk-status",
+            "snapshot-create",
+            "snapshot-refresh",
+            "snapshot-push",
+        }:
             if args.apply and not args.confirm_plan:
                 raise HighLevelError("--apply requires --confirm-plan.")
             if args.confirm_plan and not args.apply:
@@ -632,6 +753,140 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
             )
         if args.command == "live-audit":
             return live_agency_audit(backend, company_id=args.company_id, markup=args.markup)
+        if args.command == "agency-workflows":
+            return list_location_workflows_backend(backend, location_id=args.location_id)
+        if args.command == "workflow-bulk-status":
+            loc_list = (
+                [x.strip() for x in args.location_ids.split(",") if x.strip()]
+                if args.location_ids
+                else None
+            )
+            wf_list = (
+                [x.strip() for x in args.workflow_ids.split(",") if x.strip()]
+                if args.workflow_ids
+                else None
+            )
+            plan = make_workflow_bulk_status_plan(
+                backend,
+                status=args.status,
+                location_id=args.location_id,
+                location_ids=loc_list,
+                workflow_ids=wf_list,
+                only_changed=not bool(args.all),
+            )
+            if not args.apply:
+                return {"mode": "preview", "plan": plan, "writes_sent": 0}
+            return apply_workflow_bulk_status_plan(
+                backend,
+                plan,
+                confirm_plan=args.confirm_plan,
+            )
+        if args.command == "snapshots-list":
+            return list_agency_snapshots(
+                backend,
+                company_id=args.company_id,
+                snapshot_type=args.type,
+                limit=args.limit,
+            )
+        if args.command == "snapshot-inspect":
+            return inspect_agency_snapshot(
+                backend,
+                snapshot_id=args.snapshot_id,
+                company_id=args.company_id,
+                snapshot_type=args.type,
+            )
+        if args.command == "snapshot-create":
+            plan = make_snapshot_create_plan(
+                backend,
+                name=args.name,
+                location_id=args.location_id,
+                company_id=args.company_id,
+            )
+            if not args.apply:
+                return {"mode": "preview", "plan": plan, "writes_sent": 0}
+            return apply_snapshot_create_plan(
+                backend,
+                plan,
+                confirm_plan=args.confirm_plan,
+                wait=bool(args.wait),
+                timeout_seconds=args.timeout_seconds,
+            )
+        if args.command == "snapshot-refresh":
+            plan = make_snapshot_refresh_plan(
+                backend,
+                snapshot_id=args.snapshot_id,
+                company_id=args.company_id,
+            )
+            if not args.apply:
+                return {"mode": "preview", "plan": plan, "writes_sent": 0}
+            return apply_snapshot_refresh_plan(
+                backend,
+                plan,
+                confirm_plan=args.confirm_plan,
+                wait=bool(args.wait),
+                timeout_seconds=args.timeout_seconds,
+            )
+        if args.command == "snapshot-push":
+            loc_list = (
+                [x.strip() for x in args.location_ids.split(",") if x.strip()]
+                if args.location_ids
+                else []
+            )
+            if args.location_id and args.location_id.strip():
+                if args.location_id.strip() not in loc_list:
+                    loc_list.append(args.location_id.strip())
+            plan = make_snapshot_push_plan(
+                backend,
+                snapshot_id=args.snapshot_id,
+                location_ids=loc_list,
+                company_id=args.company_id,
+                overwrite_conflicts=not bool(args.skip_conflicts),
+                draft_workflows=not bool(args.keep_workflow_status),
+                unlock_dashboards=not bool(args.skip_unlock_dashboards),
+            )
+            if not args.apply:
+                return {"mode": "preview", "plan": plan, "writes_sent": 0}
+            return apply_snapshot_push_plan(
+                backend,
+                plan,
+                confirm_plan=args.confirm_plan,
+                wait=not bool(args.no_wait),
+                timeout_seconds=args.timeout_seconds,
+            )
+        if args.command == "location-full-unnerf":
+            loc_list = (
+                [x.strip() for x in args.location_ids.split(",") if x.strip()]
+                if args.location_ids
+                else None
+            )
+            plan = make_location_full_unnerf_plan(
+                backend,
+                location_id=args.location_id,
+                location_ids=loc_list,
+                user_id=args.user_id,
+                email=args.email,
+                company_id=args.company_id,
+                markup=args.markup,
+            )
+            if not args.apply:
+                return {"mode": "preview", "plan": plan, "writes_sent": 0}
+            return apply_location_full_unnerf_plan(
+                backend,
+                plan,
+                confirm_plan=args.confirm_plan,
+            )
+        if args.command == "location-clone-audit":
+            terms = (
+                [x.strip() for x in args.brand_terms.split(",") if x.strip()]
+                if args.brand_terms
+                else None
+            )
+            return inspect_location_clone_audit(
+                backend,
+                location_id=args.location_id,
+                company_id=args.company_id,
+                brand_terms=terms,
+            )
 
     if args.command in {
         "custom-value-upsert",
@@ -656,6 +911,17 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
         return probe_live_lanes(client)
     if args.command == "subaccount-audit":
         return subaccount_audit(client)
+    if args.command == "subaccount-rebrand-audit":
+        terms = (
+            [x.strip() for x in args.brand_terms.split(",") if x.strip()]
+            if args.brand_terms
+            else None
+        )
+        return subaccount_rebrand_audit(client, brand_terms=terms)
+    if args.command == "email-templates":
+        return list_email_templates(client, limit=args.limit)
+    if args.command == "trigger-links":
+        return list_trigger_links(client)
     if args.command == "location":
         return location_snapshot(client)
     if args.command == "custom-values":

@@ -2,7 +2,7 @@
   "schema": "legends.knowledge-pack/v1",
   "id": "gohighlevel",
   "module": "legends-gohighlevel",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "entrypoint": "index.md",
   "files": [
     {
@@ -27,7 +27,7 @@
     },
     {
       "path": "internal-backend-and-dashboards.md",
-      "sha256": "a7e7c71f14104096f7a5d420f4dbba81732f9b7b2da05d4f76a6f9022c74ab65"
+      "sha256": "b5abbc4977b5790df4443b46ed413aff63087c24d5afa6679f25b862592cdaa8"
     },
     {
       "path": "sources.md",

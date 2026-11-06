@@ -12,27 +12,41 @@ import urllib.error
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from legends_gohighlevel.agency import (
+    apply_location_full_unnerf_plan,
     apply_location_unnerf_plan,
     apply_rebilling_sync_plan,
     apply_smtp_unlock_plan,
+    apply_snapshot_create_plan,
+    apply_snapshot_push_plan,
+    apply_snapshot_refresh_plan,
     apply_unlock_dashboards_plan,
     apply_user_sync_locations_plan,
     apply_user_unnerf_plan,
+    apply_workflow_bulk_status_plan,
+    inspect_agency_snapshot,
     inspect_dashboard_permissions,
     inspect_email_domains,
+    inspect_location_clone_audit,
     inspect_rebilling_status,
     inspect_smtp_status,
     inspect_user,
     list_agency_locations,
+    list_agency_snapshots,
     list_agency_users,
+    list_location_workflows_backend,
     list_private_integrations,
     live_agency_audit,
+    make_location_full_unnerf_plan,
     make_location_unnerf_plan,
     make_rebilling_sync_plan,
     make_smtp_unlock_plan,
+    make_snapshot_create_plan,
+    make_snapshot_push_plan,
+    make_snapshot_refresh_plan,
     make_unlock_dashboards_plan,
     make_user_sync_locations_plan,
     make_user_unnerf_plan,
+    make_workflow_bulk_status_plan,
 )
 from legends_gohighlevel.api import API_VERSION, API_VERSION_V3, BackendClient, Client, HighLevelError, NoRedirect, valid_id
 from legends_gohighlevel.cli import execute, main, parser
@@ -44,13 +58,16 @@ from legends_gohighlevel.crm import (
     apply_opportunity_update_plan,
     apply_tag_plan,
     apply_workflow_status_plan,
+    inspect_profiles_matrix,
     inspect_workflow_definition,
     list_associations,
     list_calendar_free_slots,
     list_conversation_ai_agents,
+    list_email_templates,
     list_funnels,
     list_objects,
     list_tags,
+    list_trigger_links,
     list_voice_ai_agents,
     list_voice_ai_calls,
     list_workflow_logs,
@@ -65,6 +82,7 @@ from legends_gohighlevel.crm import (
     search_contacts,
     search_object_records,
     subaccount_audit,
+    subaccount_rebrand_audit,
     validate_workflow_definition,
 )
 from legends_gohighlevel.governance import (
@@ -251,6 +269,10 @@ class FakeClient:
             return {"valid": True, "errors": []}
         if version == API_VERSION_V3 and method == "PUT" and path == "/workflows/wf_12345678/status":
             return {"id": "wf_12345678", "status": (body or {}).get("status", "published")}
+        if method == "GET" and path == "/emails/builder":
+            return {"builders": [{"id": "em_01", "name": "Welcome OldBrand Email", "templateType": "builder"}], "total": 1}
+        if method == "GET" and path == "/links/":
+            return {"links": [{"id": "lnk_01", "name": "OldBrand CTA", "redirectTo": "https://oldbrand.example.com/start"}]}
         return {}
 
 
@@ -260,6 +282,35 @@ class FakeBackendClient:
     def __init__(self, company_id: str | None = "cmp_test_12345678"):
         self.company_id = company_id or "cmp_test_12345678"
         self.token_source = "mock:test"
+        self.worker_user_id = "usr_worker_9999"
+        self.workflows_by_loc = {
+            "loc_alpha_1234": [
+                {"id": "wf_alpha_01", "name": "OldBrand Meta CAPI Lead", "status": "published", "version": 1},
+                {"id": "wf_alpha_02", "name": "Followup Sequence", "status": "published", "version": 1},
+            ],
+            "loc_source_0001": [
+                {"id": "wf_src_01", "name": "Source Workflow", "status": "published", "version": 1},
+            ],
+        }
+        self.snapshots = {
+            "snap_master_01": {
+                "_id": "snap_master_01",
+                "name": "Master Snapshot",
+                "locationId": "loc_source_0001",
+                "companyId": self.company_id,
+                "type": "own",
+                "version": 2,
+                "snapshotVersion": 1,
+                "dehydrationStatus": {
+                    "state": "completed",
+                    "operationType": "refresh",
+                    "completed": 56,
+                    "total": 56,
+                },
+                "dateAdded": "2026-11-06T17:00:00Z",
+                "dateUpdated": "2026-11-06T17:05:00Z",
+            }
+        }
         self.locations = {
             "loc_alpha_1234": {
                 "id": "loc_alpha_1234",
@@ -337,9 +388,15 @@ class FakeBackendClient:
     ) -> dict:
         if method == "GET" and path == "/locations/search":
             return {"locations": list(self.locations.values())}
+        if method == "GET" and path.startswith("/locations/") and path.endswith("/customValues"):
+            return {"customValues": [{"id": "cv_01", "name": "Brand URL", "fieldKey": "{{ custom_values.brand_url }}", "value": "https://oldbrand.example.com"}]}
+        if method == "GET" and path.startswith("/locations/") and path.endswith("/customFields"):
+            return {"customFields": [{"id": "cf_01", "name": "Project Type"}]}
+        if method == "GET" and path.startswith("/locations/") and path.endswith("/tags"):
+            return {"tags": [{"id": "tg_01", "name": "vip"}]}
         if method == "GET" and path.startswith("/locations/"):
             lid = path.rsplit("/", 1)[-1]
-            return {"location": dict(self.locations[lid])}
+            return {"location": dict(self.locations.get(lid, {"id": lid, "_id": lid, "name": f"Loc {lid}", "companyId": self.company_id, "permissions": dict(UNNERFED_LOCATION_PERMISSIONS)}))}
         if method == "PUT" and path.startswith("/locations/"):
             assert body is not None
             lid = path.rsplit("/", 1)[-1]
@@ -448,6 +505,88 @@ class FakeBackendClient:
                 dict(x) for x in body.get("permissionAccess", [])
             ]
             return {"data": {"permission": self.dashboard_perms["dash_default_1234"]}}
+        if method == "GET" and path == "/workflows/":
+            lid = (query or {}).get("locationId", "loc_alpha_1234")
+            return {"workflows": [dict(w) for w in self.workflows_by_loc.get(lid, [])]}
+        if method == "PUT" and path.startswith("/workflow/") and path.endswith("/change-status"):
+            assert body is not None
+            lid = path.split("/")[2]
+            wids = set(body.get("workflowIds") or [])
+            new_st = body.get("status", "draft")
+            for w in self.workflows_by_loc.get(lid, []):
+                if w["id"] in wids:
+                    w["status"] = new_st
+            return {"success": True, "results": {"totalProcessed": len(wids), "successfulUpdates": len(wids)}}
+        if method == "GET" and path.startswith("/snapshots/v2/"):
+            return {"snapshots": list(self.snapshots.values()), "totalCount": len(self.snapshots)}
+        if method == "GET" and path.startswith("/snapshots/snapshotDetails/"):
+            sid = path.rsplit("/", 1)[-1]
+            return dict(self.snapshots[sid])
+        if method == "GET" and path.startswith("/snapshots/") and path.endswith("/assets"):
+            return {
+                "workflow": [{"id": "wf_alpha_01", "name": "OldBrand Meta CAPI Lead"}],
+                "pipelines": [{"id": "pip_01", "name": "Sales Pipeline"}],
+                "dashboards": [{"id": "dash_default_1234", "name": "Default", "isDefault": True}],
+            }
+        if method == "GET" and path.startswith("/snapshots/snapshot-push/") and path.endswith("/push-in-progress"):
+            return {"pushInProgress": False}
+        if method == "GET" and path.startswith("/snapshots/push-batch/v2/"):
+            sid = path.split("/")[4]
+            return {
+                "batches": [
+                    {
+                        "_id": "batch_01",
+                        "snapshotId": sid,
+                        "status": "completed",
+                        "totalLocations": 1,
+                        "completedLocations": 1,
+                    }
+                ],
+                "totalCount": 1,
+            }
+        if method == "POST" and path == "/snapshots/create":
+            assert body is not None
+            new_snap = {
+                "_id": "snap_created_02",
+                "name": body["name"],
+                "locationId": body["location_id"],
+                "companyId": body["company_id"],
+                "type": "own",
+                "version": 2,
+                "snapshotVersion": 1,
+                "dehydrationStatus": {"state": "completed", "completed": 56, "total": 56},
+            }
+            self.snapshots["snap_created_02"] = new_snap
+            return new_snap
+        if method == "POST" and path.startswith("/snapshots/") and path.endswith("/refresh"):
+            sid = path.split("/")[2]
+            self.snapshots[sid]["snapshotVersion"] = int(self.snapshots[sid].get("snapshotVersion", 1)) + 1
+            return {"ok": True}
+        if method == "POST" and path.startswith("/snapshots/snapshot-push/v2/") and path.endswith("/set_assets_to_locations"):
+            return {"ok": True, "batchId": "batch_01"}
+        if method == "GET" and path.startswith("/snapshots/locations/") and path.endswith("/snapshot-history"):
+            lid = path.split("/")[3]
+            return {
+                "data": [
+                    {
+                        "id": "hist_01",
+                        "snapshotId": "snap_master_01",
+                        "locationId": lid,
+                        "snapshotName": "Master Snapshot",
+                        "lastLoadedVersion": 1,
+                    }
+                ]
+            }
+        if method == "GET" and path == "/opportunities/pipelines":
+            return {"pipelines": [{"id": "pip_01", "name": "OldBrand Pipeline", "stages": [{"name": "New"}]}]}
+        if method == "GET" and path == "/calendars/":
+            return {"calendars": [{"id": "cal_01", "name": "OldBrand Intake", "slug": "oldbrand-intake", "isActive": True}]}
+        if method == "GET" and path == "/forms/":
+            return {"forms": [{"id": "frm_01", "name": "OldBrand Form"}], "total": 1}
+        if method == "GET" and path == "/emails/builder":
+            return {"builders": [{"id": "em_01", "name": "OldBrand Welcome"}], "total": 1}
+        if method == "GET" and path == "/links/":
+            return {"links": [{"id": "lnk_01", "name": "OldBrand Link", "redirectTo": "https://oldbrand.example.com"}]}
         raise HighLevelError(f"Unhandled mock backend route: {method} {path}")
 
 
@@ -673,6 +812,86 @@ class AgencyBackendControlTests(unittest.TestCase):
         reb_status = inspect_rebilling_status(fb, location_id="loc_alpha_1234")
         self.assertTrue(reb_status["ok"])
 
+    def test_snapshots_v2_bulk_workflow_status_and_full_unnerf(self) -> None:
+        fb = FakeBackendClient()
+
+        # 1. List and inspect V2 snapshots
+        snaps = list_agency_snapshots(fb)
+        self.assertEqual(snaps["count"], 1)
+        self.assertEqual(snaps["snapshots"][0]["id"], "snap_master_01")
+
+        inspected = inspect_agency_snapshot(fb, snapshot_id="snap_master_01")
+        self.assertEqual(inspected["total_asset_count"], 3)
+        self.assertEqual(inspected["default_dashboard_id"], "dash_default_1234")
+
+        # 2. Create and refresh V2 snapshots
+        cr_plan = make_snapshot_create_plan(fb, name="Clone Snapshot", location_id="loc_alpha_1234")
+        cr_app = apply_snapshot_create_plan(fb, cr_plan, confirm_plan=cr_plan["sha256"], wait=True)
+        self.assertTrue(cr_app["verified"])
+        self.assertEqual(cr_app["snapshot_id"], "snap_created_02")
+
+        rf_plan = make_snapshot_refresh_plan(fb, snapshot_id="snap_master_01")
+        rf_app = apply_snapshot_refresh_plan(fb, rf_plan, confirm_plan=rf_plan["sha256"], wait=True)
+        self.assertTrue(rf_app["verified"])
+        self.assertEqual(rf_app["after_snapshot_version"], 2)
+
+        # 3. Push snapshot into loc_alpha_1234 with automatic workflow drafting and dashboard unlocking
+        with self.assertRaises(HighLevelError):
+            make_snapshot_push_plan(fb, snapshot_id="snap_master_01", location_ids=["loc_source_0001"])
+
+        push_plan = make_snapshot_push_plan(
+            fb,
+            snapshot_id="snap_master_01",
+            location_ids=["loc_alpha_1234"],
+            draft_workflows=True,
+            unlock_dashboards=True,
+        )
+        self.assertEqual(push_plan["target_location_count"], 1)
+        push_app = apply_snapshot_push_plan(fb, push_plan, confirm_plan=push_plan["sha256"], wait=True)
+        self.assertTrue(push_app["verified"])
+        self.assertTrue(push_app["workflow_draft_results"][0]["all_workflows_draft"])
+        self.assertEqual(push_app["dashboard_unlock_results"][0]["permission_map"]["account_admin"], "full")
+
+        # 4. 1-command 5-layer full un-nerf
+        full_plan = make_location_full_unnerf_plan(
+            fb,
+            location_id="loc_alpha_1234",
+            email="member@example.com",
+            markup=5,
+        )
+        self.assertEqual(len(full_plan["layers"]["layer_2_user_scopes"]), 2)
+        full_app = apply_location_full_unnerf_plan(fb, full_plan, confirm_plan=full_plan["sha256"])
+        self.assertTrue(full_app["verified"])
+
+        # 5. Clone readiness & brand-leak audit via BackendClient
+        clone_aud = inspect_location_clone_audit(
+            fb,
+            location_id="loc_alpha_1234",
+            brand_terms=["oldbrand"],
+        )
+        self.assertTrue(clone_aud["ok"])
+        self.assertTrue(clone_aud["all_workflows_draft"])
+        self.assertGreaterEqual(clone_aud["brand_match_count"], 5)
+        self.assertEqual(len(clone_aud["integration_risk_workflows"]), 1)
+
+        # 6. Bulk workflow status switch back to published via CLI execute
+        args_wf_prev = parser().parse_args(["workflow-bulk-status", "--location-id", "loc_alpha_1234", "--status", "published"])
+        prev_res = execute(args_wf_prev, backend_factory=lambda **_: fb)
+        self.assertEqual(prev_res["mode"], "preview")
+        args_wf_app = parser().parse_args([
+            "workflow-bulk-status",
+            "--location-id",
+            "loc_alpha_1234",
+            "--status",
+            "published",
+            "--apply",
+            "--confirm-plan",
+            prev_res["plan"]["sha256"],
+        ])
+        app_res = execute(args_wf_app, backend_factory=lambda **_: fb)
+        self.assertTrue(app_res["verified"])
+        self.assertEqual(app_res["results"][0]["after_published_count"], 2)
+
 
 class CrmAndMutationTests(unittest.TestCase):
     def test_contacts_pii_lean_default_vs_full(self) -> None:
@@ -839,6 +1058,22 @@ class CrmAndMutationTests(unittest.TestCase):
         self.assertTrue(ou_app["verified"])
         self.assertEqual(ou_app["readback"]["status"], "won")
         self.assertEqual(ou_app["readback"]["monetaryValue"], 2500.0)
+
+        em_tmps = list_email_templates(fake)
+        self.assertEqual(em_tmps["count"], 1)
+        self.assertEqual(em_tmps["email_templates"][0]["name"], "Welcome OldBrand Email")
+
+        t_links = list_trigger_links(fake)
+        self.assertEqual(t_links["count"], 1)
+        self.assertEqual(t_links["links"][0]["name"], "OldBrand CTA")
+
+        reb_aud = subaccount_rebrand_audit(fake, brand_terms=["oldbrand"])
+        self.assertTrue(reb_aud["all_workflows_draft"])
+        self.assertGreaterEqual(reb_aud["brand_match_count"], 2)
+
+        mat = inspect_profiles_matrix(profiles=["alpha", "beta"], client_factory=lambda profile=None: FakeClient(location_id=f"loc_{profile}_12345"))
+        self.assertTrue(mat["ok"])
+        self.assertEqual(mat["profile_count"], 2)
 
     def test_cli_offline_doctor_and_confirmation_guards(self) -> None:
         args = parser().parse_args(["doctor"])

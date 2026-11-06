@@ -5,7 +5,7 @@ import hashlib
 import json
 from typing import Any
 
-from .api import API_VERSION_V3, Client, HighLevelError, valid_id, valid_object_key
+from .api import API_VERSION_V3, Client, HighLevelError, load_subaccount_config, valid_id, valid_object_key
 
 CORE_LANES = (
     ("location", "locations.readonly", lambda loc: (f"/locations/{loc}", None)),
@@ -1232,4 +1232,296 @@ def subaccount_audit(client: Client) -> dict[str, Any]:
         },
         "warnings": warnings,
         "rate_limits": client.last_rate_limits,
+    }
+
+
+def list_email_templates(client: Client, limit: int = 100) -> dict[str, Any]:
+    loc = client.location_id
+    res = client.request(
+        "GET",
+        "/emails/builder",
+        query={"locationId": loc, "limit": str(max(1, min(limit, 100)))},
+    )
+    raw = res.get("builders") if isinstance(res.get("builders"), list) else (res.get("templates") or res.get("emails") or [])
+    if not isinstance(raw, list):
+        raw = []
+    templates = [
+        {
+            "id": str(item.get("id") or item.get("_id") or ""),
+            "name": str(item.get("name") or item.get("title") or ""),
+            "type": item.get("templateType") or item.get("type"),
+            "updatedBy": item.get("updatedBy"),
+            "dateUpdated": item.get("dateUpdated") or item.get("updatedAt"),
+        }
+        for item in raw
+        if isinstance(item, dict)
+    ]
+    raw_total = res.get("total", len(templates))
+    if isinstance(raw_total, list) and raw_total and isinstance(raw_total[0], dict):
+        raw_total = raw_total[0].get("total", len(templates))
+    return {
+        "location_id": loc,
+        "count": len(templates),
+        "total": int(raw_total) if isinstance(raw_total, (int, float)) else len(templates),
+        "email_templates": templates,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def list_trigger_links(client: Client) -> dict[str, Any]:
+    loc = client.location_id
+    res = client.request("GET", "/links/", query={"locationId": loc})
+    raw = res.get("links", [])
+    if not isinstance(raw, list):
+        raw = []
+    links = [
+        {
+            "id": str(item.get("id") or item.get("_id") or ""),
+            "name": str(item.get("name") or ""),
+            "redirectTo": item.get("redirectTo"),
+            "fieldKey": item.get("fieldKey"),
+        }
+        for item in raw
+        if isinstance(item, dict)
+    ]
+    return {
+        "location_id": loc,
+        "count": len(links),
+        "links": links,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def _find_brand_hits(text: str | None, terms: list[str]) -> list[str]:
+    if not text or not terms:
+        return []
+    low = str(text).lower()
+    return [t for t in terms if t and t.lower() in low]
+
+
+def subaccount_rebrand_audit(
+    client: Client,
+    *,
+    brand_terms: list[str] | None = None,
+) -> dict[str, Any]:
+    """Audit a cloned or existing sub-account via Official API v2 for workflow draft safety, empty custom values, and source brand-term occurrences."""
+    clean_terms = [t.strip() for t in (brand_terms or []) if t and t.strip()]
+    loc_info = location_snapshot(client)["location"]
+    workflows_info = list_workflows(client)
+    pipelines_info = list_pipelines(client)
+    calendars_info = list_calendars(client)
+    forms_info = list_forms(client, limit=50)
+    surveys_info = list_surveys(client, limit=50)
+    funnels_info = list_funnels(client, limit=50, include_redirects=True)
+    cv_info = list_custom_values(client)
+    cf_info = list_custom_fields(client)
+    tags_info = list_tags(client)
+
+    try:
+        emails_info = list_email_templates(client, limit=100)
+    except HighLevelError:
+        emails_info = {"count": 0, "email_templates": []}
+    try:
+        links_info = list_trigger_links(client)
+    except HighLevelError:
+        links_info = {"count": 0, "links": []}
+
+    workflows = workflows_info["workflows"]
+    published_wf = [w for w in workflows if str(w.get("status", "")).lower() == "published"]
+    draft_wf = [w for w in workflows if str(w.get("status", "")).lower() != "published"]
+
+    risk_keywords = ("capi", "webhook", "meta", "facebook", "stripe", "payment", "betaling", "slack", "zapier", "make")
+    integration_risk_workflows = [
+        {"id": w["id"], "name": w["name"], "status": w.get("status")}
+        for w in workflows
+        if any(k in str(w.get("name") or "").lower() for k in risk_keywords)
+    ]
+
+    empty_custom_values = [
+        {"id": cv["id"], "name": cv["name"], "fieldKey": cv["fieldKey"]}
+        for cv in cv_info["custom_values"]
+        if not str(cv.get("value") or "").strip()
+    ]
+
+    brand_matches: list[dict[str, Any]] = []
+    if clean_terms:
+        for field_name in ("name", "email", "website", "phone"):
+            val = loc_info.get(field_name)
+            hits = _find_brand_hits(str(val or ""), clean_terms)
+            if hits:
+                brand_matches.append(
+                    {
+                        "category": "business_profile",
+                        "field": field_name,
+                        "value": val,
+                        "matched_terms": hits,
+                    }
+                )
+        for cv in cv_info["custom_values"]:
+            hits = _find_brand_hits(f"{cv.get('name', '')} {cv.get('value', '')}", clean_terms)
+            if hits:
+                brand_matches.append(
+                    {
+                        "category": "custom_value",
+                        "id": cv["id"],
+                        "name": cv["name"],
+                        "value": cv.get("value"),
+                        "matched_terms": hits,
+                    }
+                )
+        for p in pipelines_info["pipelines"]:
+            hits = _find_brand_hits(p.get("name"), clean_terms)
+            if hits:
+                brand_matches.append(
+                    {
+                        "category": "pipeline",
+                        "id": p["id"],
+                        "name": p["name"],
+                        "matched_terms": hits,
+                    }
+                )
+        for c in calendars_info["calendars"]:
+            hits = _find_brand_hits(f"{c.get('name', '')} {c.get('slug', '')}", clean_terms)
+            if hits:
+                brand_matches.append(
+                    {
+                        "category": "calendar",
+                        "id": c["id"],
+                        "name": c["name"],
+                        "slug": c.get("slug"),
+                        "matched_terms": hits,
+                    }
+                )
+        for f in forms_info["forms"]:
+            hits = _find_brand_hits(f.get("name"), clean_terms)
+            if hits:
+                brand_matches.append(
+                    {
+                        "category": "form",
+                        "id": f["id"],
+                        "name": f["name"],
+                        "matched_terms": hits,
+                    }
+                )
+        for em in emails_info["email_templates"]:
+            hits = _find_brand_hits(em.get("name"), clean_terms)
+            if hits:
+                brand_matches.append(
+                    {
+                        "category": "email_template",
+                        "id": em["id"],
+                        "name": em["name"],
+                        "matched_terms": hits,
+                    }
+                )
+        for lk in links_info["links"]:
+            hits = _find_brand_hits(f"{lk.get('name', '')} {lk.get('redirectTo', '')}", clean_terms)
+            if hits:
+                brand_matches.append(
+                    {
+                        "category": "trigger_link",
+                        "id": lk["id"],
+                        "name": lk["name"],
+                        "redirectTo": lk.get("redirectTo"),
+                        "matched_terms": hits,
+                    }
+                )
+        for wf in workflows:
+            hits = _find_brand_hits(wf.get("name"), clean_terms)
+            if hits:
+                brand_matches.append(
+                    {
+                        "category": "workflow",
+                        "id": wf["id"],
+                        "name": wf["name"],
+                        "status": wf.get("status"),
+                        "matched_terms": hits,
+                    }
+                )
+
+    return {
+        "ok": len(published_wf) == 0,
+        "location_id": client.location_id,
+        "business_profile": loc_info,
+        "all_workflows_draft": len(published_wf) == 0,
+        "asset_counts": {
+            "workflows_total": len(workflows),
+            "workflows_published": len(published_wf),
+            "workflows_draft": len(draft_wf),
+            "pipelines": pipelines_info["count"],
+            "calendars": calendars_info["count"],
+            "forms": forms_info["count"],
+            "surveys": surveys_info["count"],
+            "funnels": funnels_info["count"],
+            "email_templates": emails_info["count"],
+            "trigger_links": links_info["count"],
+            "custom_values": cv_info["count"],
+            "custom_fields": cf_info["count"],
+            "tags": tags_info["count"],
+        },
+        "published_workflows": [{"id": w["id"], "name": w["name"]} for w in published_wf],
+        "integration_risk_workflows": integration_risk_workflows,
+        "empty_custom_values": empty_custom_values,
+        "brand_terms_checked": clean_terms,
+        "brand_match_count": len(brand_matches),
+        "brand_matches": brand_matches,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def inspect_profiles_matrix(
+    *,
+    profiles: list[str] | None = None,
+    client_factory=Client,
+) -> dict[str, Any]:
+    """Compare asset and workflow status across multiple configured sub-account profiles."""
+    base_cfg = load_subaccount_config()
+    available_profiles = list((base_cfg.get("profiles") or {}).keys())
+    target_profiles = (
+        [p.strip() for p in profiles if p and p.strip()]
+        if profiles
+        else (available_profiles if available_profiles else [base_cfg.get("selected_profile", "default")])
+    )
+    rows: list[dict[str, Any]] = []
+    all_ok = True
+    for prof_name in target_profiles:
+        try:
+            c = client_factory(profile=prof_name)
+            loc = location_snapshot(c)["location"]
+            wfs = list_workflows(c)["workflows"]
+            pub_count = sum(1 for w in wfs if str(w.get("status", "")).lower() == "published")
+            draft_count = len(wfs) - pub_count
+            pipes = list_pipelines(c)["count"]
+            cals = list_calendars(c)["count"]
+            forms_cnt = list_forms(c, limit=50)["count"]
+            cvs = list_custom_values(c)["count"]
+            rows.append(
+                {
+                    "profile": prof_name,
+                    "ok": True,
+                    "location_id": c.location_id,
+                    "name": loc.get("name"),
+                    "domain": loc.get("domain"),
+                    "workflows_total": len(wfs),
+                    "workflows_published": pub_count,
+                    "workflows_draft": draft_count,
+                    "pipelines": pipes,
+                    "calendars": cals,
+                    "forms": forms_cnt,
+                    "custom_values": cvs,
+                }
+            )
+        except HighLevelError as exc:
+            all_ok = False
+            rows.append(
+                {
+                    "profile": prof_name,
+                    "ok": False,
+                    "error": str(exc),
+                }
+            )
+    return {
+        "ok": all_ok,
+        "profile_count": len(rows),
+        "profiles": rows,
     }

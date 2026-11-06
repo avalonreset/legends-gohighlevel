@@ -46,6 +46,8 @@ For live sub-account CRM operations, load `GHL_PIT` (a sub-account Private Integ
 legends-gohighlevel subaccount-config
 legends-gohighlevel doctor --live
 legends-gohighlevel subaccount-audit
+legends-gohighlevel subaccount-rebrand-audit --brand-terms "oldbrand,olddomain.com"
+legends-gohighlevel profiles-matrix
 legends-gohighlevel --profile second-subaccount subaccount-audit
 legends-gohighlevel location
 legends-gohighlevel pipelines
@@ -53,6 +55,8 @@ legends-gohighlevel opportunities --status open --limit 20
 legends-gohighlevel calendars
 legends-gohighlevel calendar-slots --calendar-id CALENDAR_ID --start-date 1793491200000 --end-date 1793664000000
 legends-gohighlevel workflows
+legends-gohighlevel email-templates --limit 100
+legends-gohighlevel trigger-links
 legends-gohighlevel workflow-step-types
 legends-gohighlevel workflow-inspect --workflow-id WORKFLOW_ID
 legends-gohighlevel workflow-logs --workflow-id WORKFLOW_ID --limit 25
@@ -114,6 +118,24 @@ legends-gohighlevel smtp-unlock --all-locations --apply --confirm-plan SHA256_FR
 # Layer 5: Synchronize 1.05x (markup: 5) rebilling across all 4 stores and 14 SaaS Billing v2 products
 legends-gohighlevel rebilling-sync --all-locations --markup 5
 legends-gohighlevel rebilling-sync --all-locations --markup 5 --apply --confirm-plan SHA256_FROM_PREVIEW
+
+# 1-Command 5-Layer Full Un-Nerf (all 5 governance layers in one preview + apply)
+legends-gohighlevel location-full-unnerf --location-id LOCATION_ID --email user@example.com
+legends-gohighlevel location-full-unnerf --location-id LOCATION_ID --email user@example.com \
+  --apply --confirm-plan SHA256_FROM_PREVIEW
+
+# Agency Snapshots V2 & Bulk Workflow Status
+legends-gohighlevel snapshots-list
+legends-gohighlevel snapshot-inspect --snapshot-id SNAPSHOT_ID
+legends-gohighlevel snapshot-create --name "Master Snapshot" --location-id SOURCE_LOCATION_ID --wait
+legends-gohighlevel snapshot-refresh --snapshot-id SNAPSHOT_ID --wait
+legends-gohighlevel snapshot-push --snapshot-id SNAPSHOT_ID --location-ids TARGET_LOC_1,TARGET_LOC_2
+legends-gohighlevel snapshot-push --snapshot-id SNAPSHOT_ID --location-ids TARGET_LOC_1,TARGET_LOC_2 \
+  --apply --confirm-plan SHA256_FROM_PREVIEW
+legends-gohighlevel agency-workflows --location-id LOCATION_ID
+legends-gohighlevel workflow-bulk-status --location-id LOCATION_ID --status draft
+legends-gohighlevel workflow-bulk-status --location-id LOCATION_ID --status draft --apply --confirm-plan SHA256_FROM_PREVIEW
+legends-gohighlevel location-clone-audit --location-id LOCATION_ID --brand-terms "oldbrand"
 ```
 
 ## Preview and update sub-account CRM state (`custom-value`, `tag`, `contact`, `opportunity`, `workflow`)

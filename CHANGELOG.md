@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.3 (2026-11-06)
+
+- **Native Agency Snapshots V2 Engine (`legends_gohighlevel/agency.py`, `legends_gohighlevel/cli.py`):** Added `snapshots-list` (`GET /snapshots/v2/:companyId`), `snapshot-inspect` (`GET /snapshots/snapshotDetails/:id`, `/snapshots/:id/assets`, `/snapshots/snapshot-push/:id/push-in-progress`, and `/snapshots/push-batch/v2/:id/batches`), and preview-first `snapshot-create`, `snapshot-refresh`, and `snapshot-push` (`POST /snapshots/snapshot-push/v2/:id/set_assets_to_locations`) with automatic post-push workflow drafting (`--keep-workflow-status` to opt out) and dashboard RBAC unlocking (`--skip-unlock-dashboards` to opt out).
+- **Internal Bulk Workflow Status & Sub-Account Workflow Inspection (`legends_gohighlevel/agency.py`, `legends_gohighlevel/cli.py`):** Added `agency-workflows` and preview-first `workflow-bulk-status` (`PUT /workflow/:locationId/change-status` with readback verification), enabling 1-request bulk workflow status changes (`draft` / `published`) across any sub-account even when the public Workflows API v3 beta is not enabled on the location.
+- **1-Command 5-Layer Governance Un-Nerf & Clone Readiness Audit (`legends_gohighlevel/agency.py`, `legends_gohighlevel/crm.py`, `legends_gohighlevel/cli.py`):** Added preview-first `location-full-unnerf` (combining all 40 location flags, user V1/V2 scopes + `+hubpro` alias, dashboard RBAC, two-level Custom SMTP unlock, and 4-store 1.05x rebilling sync into one preview hash and execution), `location-clone-audit` (agency backend clone readiness and brand-term leak audit), and sub-account PIT commands `email-templates`, `trigger-links`, `subaccount-rebrand-audit`, and `profiles-matrix`.
+- **Expiry-Aware / Auto-Refreshing `BackendClient` (`legends_gohighlevel/api.py`):** Added JWT `exp` claim inspection so expired `GHL_TOKEN_ID` environment tokens automatically fall back to `worker_ssh` when configured, and `extract_worker_token_via_ssh` automatically wakes the worker `/health` endpoint when the IndexedDB token is near expiry.
+
 ## 0.3.2 (2026-11-05)
 
 - Added `setup.py` build-time wheel data mirror (`legends_gohighlevel/_data/`), `.legends-module`, `assets/manifest.json`, `scripts/smoke_installed_resources.py`, and `scripts/verify_knowledge_attachment.py` so standalone wheel installs resolve all knowledge packs, recipes, and references outside a source checkout.

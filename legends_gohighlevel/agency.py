@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from .api import BackendClient, HighLevelError, valid_id
@@ -243,6 +244,11 @@ def apply_location_unnerf_plan(
         lid = valid_id(target["location_id"])
         backend.request("PUT", f"/locations/{lid}", body=target["proposed_payload"])
         after = list_agency_locations(backend, location_id=lid)["location"]
+        for _ in range(4):
+            if after.get("permissions_healthy"):
+                break
+            time.sleep(0.8)
+            after = list_agency_locations(backend, location_id=lid)["location"]
         if not after.get("permissions_healthy"):
             raise HighLevelError(f"Location permissions readback failed for location {lid}.")
         results.append(
@@ -532,6 +538,7 @@ def make_user_unnerf_plan(
     user_id: str | None = None,
     email: str | None = None,
     company_id: str | None = None,
+    add_location_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     cid = _require_company_id(backend, company_id)
     uid = _resolve_user_id(backend, user_id=user_id, email=email, company_id=cid)
@@ -557,12 +564,13 @@ def make_user_unnerf_plan(
     else:
         target_scopes = [s for s in CRITICAL_ACCOUNT_ADMIN_V2_SCOPES if s not in excluded_readonly]
 
+    merged_locs = list(dict.fromkeys([*inspected["location_ids"], *[valid_id(x) for x in (add_location_ids or []) if x]]))
     proposed_payload = {
         "companyId": cid,
         "source": "agency_team",
         "type": utype,
         "role": urole,
-        "locationIds": inspected["location_ids"],
+        "locationIds": merged_locs,
         "permissions": dict(UNNERFED_V1_PERMISSIONS),
         "scopes": target_scopes,
         "scopesAssignedToOnly": [],
@@ -600,6 +608,11 @@ def apply_user_unnerf_plan(
 
     backend.request("PUT", f"/users/{uid}", body=plan["proposed_payload"])
     after = inspect_user(backend, user_id=uid, company_id=plan["company_id"])["user"]
+    for _ in range(4):
+        if after["healthy"]:
+            break
+        time.sleep(0.8)
+        after = inspect_user(backend, user_id=uid, company_id=plan["company_id"])["user"]
     if not after["healthy"]:
         raise HighLevelError("User unnerf readback still shows disabled scopes or restrictions.")
     return {
@@ -710,19 +723,26 @@ def apply_smtp_unlock_plan(
         raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
 
     cid = valid_id(str(plan["company_id"]))
-    backend.request(
-        "PUT",
-        f"/email-isv/Setting/feature/company/{cid}",
-        body={"emailIsvSettings": {"blockAddSmtp": False}},
-    )
+    try:
+        backend.request(
+            "PUT",
+            f"/email-isv/Setting/feature/company/{cid}",
+            body={"emailIsvSettings": {"blockAddSmtp": False}},
+        )
+    except HighLevelError:
+        pass
     results = []
     for target in plan.get("targets", []):
         lid = valid_id(target["location_id"])
-        backend.request(
-            "PUT",
-            f"/email-isv/Setting/feature/location/{lid}",
-            body={"blockAddSmtp": False},
-        )
+        if not target.get("already_unlocked"):
+            try:
+                backend.request(
+                    "PUT",
+                    f"/email-isv/Setting/feature/location/{lid}",
+                    body={"blockAddSmtp": False},
+                )
+            except HighLevelError:
+                pass
         onload = backend.request("GET", "/email-isv/onload", query={"locationId": lid})
         verified = onload.get("blockAddSmtp") is False
         if not verified:
@@ -1043,10 +1063,14 @@ def inspect_rebilling_status(
         loc_tw_ok = loc_tw.get("markup") == expected_markup and bool(loc_tw.get("enabled")) is expected_active_flag
         loc_mg_ok = loc_mg.get("markup") == expected_markup and bool(loc_mg.get("enabled")) is expected_active_flag
         att_ok = (
-            att_phone.get("markup") == expected_markup
-            and att_phone.get("enabled") is True
-            and att_email.get("markup") == expected_markup
-            and att_email.get("enabled") is True
+            True
+            if saas_mode == "not_activated" and not att_cfg
+            else (
+                att_phone.get("markup") == expected_markup
+                and att_phone.get("enabled") is True
+                and att_email.get("markup") == expected_markup
+                and att_email.get("enabled") is True
+            )
         )
         meta_tw_ok = meta_tw.get("markup") == expected_markup
         meta_mg_ok = meta_mg.get("markup") == expected_markup
@@ -1091,6 +1115,7 @@ def make_rebilling_sync_plan(
     all_locations: bool = False,
     company_id: str | None = None,
     markup: int = 5,
+    enable_hold_if_needed: bool = True,
 ) -> dict[str, Any]:
     cid = _require_company_id(backend, company_id)
     expected_markup = int(markup)
@@ -1103,27 +1128,71 @@ def make_rebilling_sync_plan(
         company_id=cid,
         markup=expected_markup,
     )
+    stripe_connect_id = ""
+    if enable_hold_if_needed and any(item.get("saas_mode") == "not_activated" for item in status["locations"]):
+        try:
+            comp_res = backend.request("GET", f"/companies/{cid}")
+            comp = comp_res.get("company", comp_res) if isinstance(comp_res, dict) else {}
+            stripe_connect_id = str(comp.get("stripeConnectId") or "").strip()
+        except HighLevelError:
+            stripe_connect_id = ""
+
     keys_csv = ",".join(SAAS_BILLING_V2_KEYS)
     targets = []
     for item in status["locations"]:
         lid = item["location_id"]
         loc_cid = item.get("company_id") or cid
         saas_mode = item.get("saas_mode") or "not_activated"
-        active_flag = saas_mode == "activated"
-        v2_enabled_flag = saas_mode in {"activated", "setup_pending"}
+        will_enable_hold = bool(enable_hold_if_needed and saas_mode == "not_activated" and stripe_connect_id)
+        effective_saas_mode = "setup_pending" if will_enable_hold else saas_mode
+        active_flag = effective_saas_mode == "activated"
+        v2_enabled_flag = effective_saas_mode in {"activated", "setup_pending"}
+        loc_email = "support@rankyrank.com"
+        if will_enable_hold:
+            try:
+                loc_doc = backend.request("GET", f"/locations/{lid}")
+                loc_obj = loc_doc.get("location", loc_doc) if isinstance(loc_doc, dict) else {}
+                loc_email = str(loc_obj.get("email") or "support@rankyrank.com").strip()
+            except HighLevelError:
+                pass
         targets.append(
             {
                 "location_id": lid,
                 "location_name": item.get("location_name"),
                 "company_id": loc_cid,
                 "saas_mode": saas_mode,
-                "already_healthy": item.get("healthy", False),
+                "effective_saas_mode": effective_saas_mode,
+                "already_healthy": bool(item.get("healthy", False) and not will_enable_hold),
                 "before_summary": {
                     "location_twilio_rebilling": item.get("location_twilio_rebilling"),
                     "location_mailgun_rebilling": item.get("location_mailgun_rebilling"),
                     "saas_billing_v2_mismatch_count": len(item.get("saas_billing_v2_mismatches") or []),
                 },
                 "requests": {
+                    "enable_saas": (
+                        {
+                            "method": "POST",
+                            "path": f"/saas_service/saas-config/{lid}/enable-saas",
+                            "payload": {
+                                "stripeAccountId": stripe_connect_id,
+                                "name": item.get("location_name") or lid,
+                                "email": loc_email,
+                                "companyId": loc_cid,
+                                "description": "Stripe Customer Setup",
+                            },
+                        }
+                        if will_enable_hold
+                        else None
+                    ),
+                    "allow_attach_rebilling": (
+                        {
+                            "method": "PUT",
+                            "path": f"/saas-api/saas-config/allow-attach-rebilling/{lid}",
+                            "payload": {},
+                        }
+                        if will_enable_hold
+                        else None
+                    ),
                     "saas_billing_v2": {
                         "method": "PUT",
                         "path": f"/saas-billing-v2/billing-config/group/{lid}/{keys_csv}",
@@ -1209,6 +1278,14 @@ def apply_rebilling_sync_plan(
     for target in plan.get("targets", []):
         lid = valid_id(target["location_id"])
         reqs = target["requests"]
+        en_req = reqs.get("enable_saas")
+        if isinstance(en_req, dict):
+            backend.request(en_req["method"], en_req["path"], body=en_req["payload"])
+
+        att_req = reqs.get("allow_attach_rebilling")
+        if isinstance(att_req, dict):
+            backend.request(att_req["method"], att_req["path"], body=att_req["payload"])
+
         v2_req = reqs["saas_billing_v2"]
         backend.request(v2_req["method"], v2_req["path"], body=v2_req["payload"])
 
@@ -1228,6 +1305,16 @@ def apply_rebilling_sync_plan(
             company_id=plan.get("company_id"),
             markup=expected_markup,
         )["locations"][0]
+        for _ in range(4):
+            if after.get("healthy"):
+                break
+            time.sleep(0.8)
+            after = inspect_rebilling_status(
+                backend,
+                location_id=lid,
+                company_id=plan.get("company_id"),
+                markup=expected_markup,
+            )["locations"][0]
         if not after.get("healthy"):
             raise HighLevelError(f"Rebilling sync readback failed for location {lid}.")
         results.append(
@@ -1456,4 +1543,1031 @@ def live_agency_audit(
         "dashboards": dash_summary["dashboards"],
         "smtp_locations": smtp_summary["locations"],
         "rebilling_locations": rebill_summary["locations"],
+    }
+
+
+INTEGRATION_RISK_WORKFLOW_KEYWORDS = (
+    "capi",
+    "webhook",
+    "meta",
+    "facebook",
+    "stripe",
+    "payment",
+    "betaling",
+    "slack",
+    "zapier",
+    "make",
+)
+
+
+def list_location_workflows_backend(
+    backend: BackendClient,
+    *,
+    location_id: str,
+) -> dict[str, Any]:
+    """List workflows on a sub-account via backend.leadconnectorhq.com without requiring a per-location PIT token."""
+    lid = valid_id(location_id)
+    res = backend.request("GET", "/workflows/", query={"locationId": lid})
+    raw_items = res.get("workflows", []) if isinstance(res, dict) else []
+    if not isinstance(raw_items, list):
+        raw_items = []
+    workflows = []
+    published_ids = []
+    draft_ids = []
+    risk_items = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        wid = str(item.get("id") or item.get("_id") or "")
+        name = str(item.get("name") or "")
+        status = str(item.get("status") or "").lower()
+        has_risk = any(k in name.lower() for k in INTEGRATION_RISK_WORKFLOW_KEYWORDS)
+        entry = {
+            "id": wid,
+            "name": name,
+            "status": status,
+            "version": item.get("version"),
+            "updatedAt": item.get("updatedAt"),
+            "integration_risk": has_risk,
+        }
+        workflows.append(entry)
+        if status == "published":
+            published_ids.append(wid)
+        else:
+            draft_ids.append(wid)
+        if has_risk:
+            risk_items.append({"id": wid, "name": name, "status": status})
+
+    return {
+        "location_id": lid,
+        "count": len(workflows),
+        "published_count": len(published_ids),
+        "draft_count": len(draft_ids),
+        "all_workflows_draft": len(published_ids) == 0,
+        "integration_risk_count": len(risk_items),
+        "integration_risk_workflows": risk_items,
+        "workflows": workflows,
+        "token_source": backend.token_source,
+    }
+
+
+def make_workflow_bulk_status_plan(
+    backend: BackendClient,
+    *,
+    status: str,
+    location_id: str | None = None,
+    location_ids: list[str] | None = None,
+    workflow_ids: list[str] | None = None,
+    only_changed: bool = True,
+) -> dict[str, Any]:
+    """Build a preview plan to bulk-switch workflow status (draft/published) via PUT /workflow/:locationId/change-status."""
+    clean_status = (status or "").strip().lower()
+    if clean_status not in {"draft", "published"}:
+        raise HighLevelError("Workflow status must be 'draft' or 'published'.")
+
+    raw_locs: list[str] = []
+    if location_ids:
+        raw_locs.extend(x.strip() for x in location_ids if x and x.strip())
+    if location_id and location_id.strip():
+        if location_id.strip() not in raw_locs:
+            raw_locs.append(location_id.strip())
+    if not raw_locs:
+        raise HighLevelError("Pass --location-id or --location-ids.")
+
+    updated_by = backend.worker_user_id or "agency_operator"
+    explicit_wids = [valid_id(w) for w in (workflow_ids or []) if w and w.strip()]
+
+    targets = []
+    for raw_lid in raw_locs:
+        lid = valid_id(raw_lid)
+        wf_info = list_location_workflows_backend(backend, location_id=lid)
+        all_wfs = wf_info["workflows"]
+        if explicit_wids:
+            selected = [w for w in all_wfs if w["id"] in explicit_wids]
+            missing = [wid for wid in explicit_wids if not any(w["id"] == wid for w in all_wfs)]
+            if missing:
+                raise HighLevelError(f"Workflow IDs not found in location {lid}: {missing}")
+        else:
+            selected = list(all_wfs)
+
+        if only_changed:
+            to_update = [w for w in selected if w["status"] != clean_status]
+        else:
+            to_update = list(selected)
+
+        update_ids = [w["id"] for w in to_update]
+        targets.append(
+            {
+                "location_id": lid,
+                "total_workflows": len(all_wfs),
+                "before_published_count": wf_info["published_count"],
+                "before_draft_count": wf_info["draft_count"],
+                "target_status": clean_status,
+                "workflow_count_to_update": len(update_ids),
+                "already_in_target_status": len(update_ids) == 0,
+                "workflows_to_update": [{"id": w["id"], "name": w["name"], "before_status": w["status"]} for w in to_update],
+                "proposed_request": (
+                    {
+                        "method": "PUT",
+                        "path": f"/workflow/{lid}/change-status",
+                        "payload": {
+                            "workflowIds": update_ids,
+                            "status": clean_status,
+                            "updatedBy": updated_by,
+                        },
+                    }
+                    if update_ids
+                    else None
+                ),
+            }
+        )
+
+    plan_core = {
+        "resource": "workflow_bulk_status",
+        "action": f"bulk_set_{clean_status}",
+        "target_status": clean_status,
+        "location_count": len(targets),
+        "targets": targets,
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_workflow_bulk_status_plan(
+    backend: BackendClient,
+    plan: dict[str, Any],
+    *,
+    confirm_plan: str,
+) -> dict[str, Any]:
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+
+    target_status = str(plan.get("target_status") or "draft").lower()
+    results = []
+    for target in plan.get("targets", []):
+        lid = valid_id(target["location_id"])
+        req = target.get("proposed_request")
+        expected_ids = [w["id"] for w in target.get("workflows_to_update", [])]
+        if isinstance(req, dict) and expected_ids:
+            backend.request(req["method"], req["path"], body=req["payload"])
+
+        after = list_location_workflows_backend(backend, location_id=lid)
+        after_map = {w["id"]: w["status"] for w in after["workflows"]}
+        mismatched = [wid for wid in expected_ids if after_map.get(wid) != target_status]
+        if mismatched:
+            raise HighLevelError(
+                f"Bulk workflow status readback failed on location {lid} for workflows: {mismatched}"
+            )
+        results.append(
+            {
+                "location_id": lid,
+                "target_status": target_status,
+                "updated_count": len(expected_ids),
+                "after_published_count": after["published_count"],
+                "after_draft_count": after["draft_count"],
+                "all_workflows_draft": after["all_workflows_draft"],
+                "verified": True,
+            }
+        )
+
+    return {
+        "mode": "applied",
+        "action": plan.get("action"),
+        "target_status": target_status,
+        "location_count": len(results),
+        "verified": True,
+        "results": results,
+    }
+
+
+def list_agency_snapshots(
+    backend: BackendClient,
+    *,
+    company_id: str | None = None,
+    snapshot_type: str = "own",
+    limit: int = 50,
+) -> dict[str, Any]:
+    """List agency snapshots via GET /snapshots/v2/:companyId."""
+    cid = _require_company_id(backend, company_id)
+    clean_type = (snapshot_type or "own").strip().lower()
+    if clean_type not in {"own", "imported", "shared"}:
+        raise HighLevelError("snapshot_type must be 'own', 'imported', or 'shared'.")
+
+    res = backend.request(
+        "GET",
+        f"/snapshots/v2/{cid}",
+        query={
+            "companyId": cid,
+            "skip": "0",
+            "limit": str(max(1, min(int(limit), 100))),
+            "type": clean_type,
+        },
+    )
+    raw_snaps = res.get("snapshots") if isinstance(res, dict) and isinstance(res.get("snapshots"), list) else []
+    snapshots = []
+    for s in raw_snaps:
+        if not isinstance(s, dict):
+            continue
+        dehyd = s.get("dehydrationStatus") if isinstance(s.get("dehydrationStatus"), dict) else {}
+        snapshots.append(
+            {
+                "id": str(s.get("_id") or s.get("id") or ""),
+                "name": s.get("name"),
+                "location_id": s.get("locationId"),
+                "type": s.get("type", clean_type),
+                "version": s.get("version"),
+                "snapshot_version": s.get("snapshotVersion"),
+                "dehydration_state": dehyd.get("state"),
+                "dehydration_completed": dehyd.get("completed"),
+                "dehydration_total": dehyd.get("total"),
+                "date_added": s.get("dateAdded"),
+                "date_updated": s.get("dateUpdated"),
+            }
+        )
+    return {
+        "company_id": cid,
+        "snapshot_type": clean_type,
+        "count": len(snapshots),
+        "total_count": res.get("totalCount", len(snapshots)) if isinstance(res, dict) else len(snapshots),
+        "snapshots": snapshots,
+        "token_source": backend.token_source,
+    }
+
+
+def inspect_agency_snapshot(
+    backend: BackendClient,
+    *,
+    snapshot_id: str,
+    company_id: str | None = None,
+    snapshot_type: str = "own",
+) -> dict[str, Any]:
+    """Inspect a snapshot's metadata, 16-category asset inventory, push-in-progress status, and recent push batches."""
+    sid = valid_id(snapshot_id)
+    cid = _require_company_id(backend, company_id)
+    clean_type = (snapshot_type or "own").strip().lower()
+
+    details = backend.request(
+        "GET",
+        f"/snapshots/snapshotDetails/{sid}",
+        query={"companyId": cid},
+    )
+    assets_raw = backend.request(
+        "GET",
+        f"/snapshots/{sid}/assets",
+        query={"type": clean_type, "companyId": cid},
+    )
+    try:
+        push_in_prog = backend.request(
+            "GET",
+            f"/snapshots/snapshot-push/{sid}/push-in-progress",
+            query={"companyId": cid},
+        )
+    except HighLevelError:
+        push_in_prog = {"inProgress": True}
+    batches_raw = backend.request(
+        "GET",
+        f"/snapshots/push-batch/v2/{sid}/batches",
+        query={"snapshotId": sid, "companyId": cid, "skip": "0", "limit": "10"},
+    )
+
+    category_counts: dict[str, int] = {}
+    selected_snapshot_assets: dict[str, list[str]] = {}
+    default_dashboard_id: str | None = None
+    total_assets = 0
+
+    if isinstance(assets_raw, dict):
+        for cat, items in assets_raw.items():
+            if not isinstance(items, list):
+                continue
+            ids = [str(x.get("id")) for x in items if isinstance(x, dict) and x.get("id")]
+            if ids:
+                category_counts[cat] = len(ids)
+                selected_snapshot_assets[cat] = ids
+                total_assets += len(ids)
+                if cat == "dashboards":
+                    for d_item in items:
+                        if isinstance(d_item, dict) and d_item.get("id"):
+                            if d_item.get("isDefault") or default_dashboard_id is None:
+                                default_dashboard_id = str(d_item["id"])
+
+    dehyd = details.get("dehydrationStatus") if isinstance(details, dict) and isinstance(details.get("dehydrationStatus"), dict) else {}
+    batches = batches_raw.get("batches", []) if isinstance(batches_raw, dict) and isinstance(batches_raw.get("batches"), list) else []
+
+    return {
+        "company_id": cid,
+        "snapshot_id": sid,
+        "name": details.get("name") if isinstance(details, dict) else None,
+        "source_location_id": details.get("locationId") if isinstance(details, dict) else None,
+        "type": details.get("type", clean_type) if isinstance(details, dict) else clean_type,
+        "version": details.get("version") if isinstance(details, dict) else None,
+        "snapshot_version": details.get("snapshotVersion") if isinstance(details, dict) else None,
+        "dehydration_status": {
+            "state": dehyd.get("state"),
+            "operation_type": dehyd.get("operationType"),
+            "completed": dehyd.get("completed"),
+            "total": dehyd.get("total"),
+        },
+        "total_asset_count": total_assets,
+        "category_counts": category_counts,
+        "default_dashboard_id": default_dashboard_id,
+        "selected_snapshot_assets": selected_snapshot_assets,
+        "assets": assets_raw if isinstance(assets_raw, dict) else {},
+        "push_in_progress": push_in_prog,
+        "recent_push_batches": batches,
+        "token_source": backend.token_source,
+    }
+
+
+def make_snapshot_create_plan(
+    backend: BackendClient,
+    *,
+    name: str,
+    location_id: str,
+    company_id: str | None = None,
+) -> dict[str, Any]:
+    """Build a preview plan to create a new V2 agency snapshot from a source sub-account."""
+    clean_name = (name or "").strip()
+    if not clean_name or len(clean_name) > 120:
+        raise HighLevelError("Snapshot --name is required (1..120 characters).")
+    lid = valid_id(location_id)
+    cid = _require_company_id(backend, company_id)
+
+    loc_info = list_agency_locations(backend, location_id=lid)["location"]
+    existing = list_agency_snapshots(backend, company_id=cid)["snapshots"]
+    same_name = [s for s in existing if str(s.get("name") or "").strip().lower() == clean_name.lower()]
+
+    proposed_payload = {
+        "name": clean_name,
+        "location_id": lid,
+        "company_id": cid,
+    }
+    plan_core = {
+        "resource": "agency_snapshot",
+        "action": "create_snapshot_v2",
+        "company_id": cid,
+        "source_location_id": lid,
+        "source_location_name": loc_info.get("name"),
+        "snapshot_name": clean_name,
+        "existing_same_name_count": len(same_name),
+        "proposed_request": {
+            "method": "POST",
+            "path": "/snapshots/create",
+            "query": {"companyId": cid},
+            "payload": proposed_payload,
+        },
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_snapshot_create_plan(
+    backend: BackendClient,
+    plan: dict[str, Any],
+    *,
+    confirm_plan: str,
+    wait: bool = False,
+    timeout_seconds: int = 90,
+) -> dict[str, Any]:
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+
+    req = plan["proposed_request"]
+    cid = valid_id(plan["company_id"])
+    created_res = backend.request(req["method"], req["path"], body=req["payload"], query=req["query"])
+    snap_id = str(
+        created_res.get("_id")
+        or created_res.get("id")
+        or (created_res.get("snapshot") or {}).get("_id")
+        or ""
+    ).strip()
+
+    if not snap_id:
+        snaps = list_agency_snapshots(backend, company_id=cid)["snapshots"]
+        matches = [
+            s for s in snaps
+            if s.get("name") == plan["snapshot_name"] and s.get("location_id") == plan["source_location_id"]
+        ]
+        if matches:
+            snap_id = str(matches[0]["id"])
+
+    dehydration_state = None
+    if snap_id and wait:
+        deadline = time.time() + max(5, int(timeout_seconds))
+        while time.time() < deadline:
+            det = backend.request("GET", f"/snapshots/snapshotDetails/{snap_id}", query={"companyId": cid})
+            dehyd = det.get("dehydrationStatus") if isinstance(det, dict) and isinstance(det.get("dehydrationStatus"), dict) else {}
+            dehydration_state = dehyd.get("state")
+            if dehydration_state == "completed":
+                break
+            time.sleep(2.0)
+
+    return {
+        "mode": "applied",
+        "action": "create_snapshot_v2",
+        "company_id": cid,
+        "snapshot_id": snap_id or None,
+        "snapshot_name": plan["snapshot_name"],
+        "source_location_id": plan["source_location_id"],
+        "dehydration_state": dehydration_state,
+        "verified": bool(snap_id),
+        "response": created_res,
+    }
+
+
+def make_snapshot_refresh_plan(
+    backend: BackendClient,
+    *,
+    snapshot_id: str,
+    company_id: str | None = None,
+) -> dict[str, Any]:
+    """Build a preview plan to refresh an existing V2 agency snapshot from its linked source sub-account."""
+    sid = valid_id(snapshot_id)
+    cid = _require_company_id(backend, company_id)
+    inspected = inspect_agency_snapshot(backend, snapshot_id=sid, company_id=cid)
+
+    plan_core = {
+        "resource": "agency_snapshot",
+        "action": "refresh_snapshot_v2",
+        "company_id": cid,
+        "snapshot_id": sid,
+        "snapshot_name": inspected.get("name"),
+        "source_location_id": inspected.get("source_location_id"),
+        "before_snapshot_version": inspected.get("snapshot_version"),
+        "before_total_asset_count": inspected.get("total_asset_count"),
+        "proposed_request": {
+            "method": "POST",
+            "path": f"/snapshots/{sid}/refresh",
+            "query": {"companyId": cid},
+            "payload": {"extras": {}},
+        },
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_snapshot_refresh_plan(
+    backend: BackendClient,
+    plan: dict[str, Any],
+    *,
+    confirm_plan: str,
+    wait: bool = False,
+    timeout_seconds: int = 90,
+) -> dict[str, Any]:
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+
+    sid = valid_id(plan["snapshot_id"])
+    cid = valid_id(plan["company_id"])
+    req = plan["proposed_request"]
+    refresh_res = backend.request(req["method"], req["path"], body=req["payload"], query=req["query"])
+
+    dehydration_state = None
+    after_version = None
+    if wait:
+        deadline = time.time() + max(5, int(timeout_seconds))
+        while time.time() < deadline:
+            det = backend.request("GET", f"/snapshots/snapshotDetails/{sid}", query={"companyId": cid})
+            dehyd = det.get("dehydrationStatus") if isinstance(det, dict) and isinstance(det.get("dehydrationStatus"), dict) else {}
+            dehydration_state = dehyd.get("state")
+            after_version = det.get("snapshotVersion") if isinstance(det, dict) else None
+            if dehydration_state == "completed":
+                break
+            time.sleep(2.0)
+
+    return {
+        "mode": "applied",
+        "action": "refresh_snapshot_v2",
+        "company_id": cid,
+        "snapshot_id": sid,
+        "snapshot_name": plan.get("snapshot_name"),
+        "after_snapshot_version": after_version,
+        "dehydration_state": dehydration_state,
+        "verified": True,
+        "response": refresh_res,
+    }
+
+
+def make_snapshot_push_plan(
+    backend: BackendClient,
+    *,
+    snapshot_id: str,
+    location_ids: list[str],
+    company_id: str | None = None,
+    overwrite_conflicts: bool = True,
+    draft_workflows: bool = True,
+    unlock_dashboards: bool = True,
+) -> dict[str, Any]:
+    """Build a preview plan to push an agency V2 snapshot into one or more target sub-accounts."""
+    sid = valid_id(snapshot_id)
+    cid = _require_company_id(backend, company_id)
+    clean_locs = []
+    for raw_lid in location_ids or []:
+        if raw_lid and raw_lid.strip():
+            lid = valid_id(raw_lid.strip())
+            if lid not in clean_locs:
+                clean_locs.append(lid)
+    if not clean_locs:
+        raise HighLevelError("Provide at least one target sub-account via --location-id or --location-ids.")
+
+    inspected = inspect_agency_snapshot(backend, snapshot_id=sid, company_id=cid)
+    source_lid = inspected.get("source_location_id")
+    if source_lid and source_lid in clean_locs:
+        raise HighLevelError(
+            f"Refusing to push snapshot {sid} onto its own source sub-account ({source_lid})."
+        )
+
+    selected_assets = inspected["selected_snapshot_assets"]
+    if not selected_assets:
+        raise HighLevelError(f"Snapshot {sid} returned 0 selectable assets; verify snapshot dehydration status.")
+
+    target_locations_meta = []
+    for lid in clean_locs:
+        loc_res = backend.request("GET", f"/locations/{lid}")
+        loc_obj = loc_res.get("location", loc_res) if isinstance(loc_res, dict) else {}
+        target_locations_meta.append(
+            {
+                "location_id": lid,
+                "name": loc_obj.get("name") if isinstance(loc_obj, dict) else None,
+            }
+        )
+
+    skip_data = (
+        {}
+        if overwrite_conflicts
+        else {lid: {"assets": {}, "skipAllConflicts": True} for lid in clean_locs}
+    )
+    push_payload: dict[str, Any] = {
+        "selectedSnapshotAssets": selected_assets,
+        "snapshotType": inspected.get("type") or "own",
+        "autoIncludeDependentAssets": True,
+        "selectedLocationIds": clean_locs,
+        "selectedLocationsData": {
+            "all": {
+                "selectedLocationIds": clean_locs,
+                "excludedLocationIds": [],
+                "isGlobalSelectChecked": False,
+                "selectedLocationsCount": len(clean_locs),
+            },
+            "available": {
+                "selectedLocationIds": clean_locs,
+                "excludedLocationIds": [],
+                "isGlobalSelectChecked": False,
+                "selectedLocationsCount": len(clean_locs),
+            },
+            "linked": {
+                "selectedLocationIds": [],
+                "excludedLocationIds": [],
+                "isGlobalSelectChecked": False,
+                "selectedLocationsCount": 0,
+            },
+        },
+        "globalLocationConflictSelect": False,
+        "shouldOverwriteAllConflicts": bool(overwrite_conflicts),
+        "skipData": skip_data,
+    }
+    if inspected.get("default_dashboard_id"):
+        push_payload["defaultDashboardId"] = inspected["default_dashboard_id"]
+
+    plan_core = {
+        "resource": "agency_snapshot_push",
+        "action": "push_snapshot_v2",
+        "company_id": cid,
+        "snapshot_id": sid,
+        "snapshot_name": inspected.get("name"),
+        "snapshot_version": inspected.get("snapshot_version"),
+        "source_location_id": source_lid,
+        "total_asset_count": inspected.get("total_asset_count"),
+        "category_counts": inspected.get("category_counts"),
+        "target_location_count": len(clean_locs),
+        "target_locations": target_locations_meta,
+        "overwrite_conflicts": bool(overwrite_conflicts),
+        "post_push_draft_workflows": bool(draft_workflows),
+        "post_push_unlock_dashboards": bool(unlock_dashboards),
+        "proposed_request": {
+            "method": "POST",
+            "path": f"/snapshots/snapshot-push/v2/{sid}/set_assets_to_locations",
+            "query": {"companyId": cid},
+            "payload": push_payload,
+        },
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_snapshot_push_plan(
+    backend: BackendClient,
+    plan: dict[str, Any],
+    *,
+    confirm_plan: str,
+    wait: bool = True,
+    timeout_seconds: int = 120,
+) -> dict[str, Any]:
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+
+    sid = valid_id(plan["snapshot_id"])
+    cid = valid_id(plan["company_id"])
+    target_lids = [valid_id(t["location_id"]) for t in plan.get("target_locations", [])]
+    req = plan["proposed_request"]
+
+    push_res = backend.request(req["method"], req["path"], body=req["payload"], query=req["query"])
+
+    batch_status = None
+    if wait or plan.get("post_push_draft_workflows") or plan.get("post_push_unlock_dashboards"):
+        deadline = time.time() + max(10, int(timeout_seconds))
+        while time.time() < deadline:
+            try:
+                prog = backend.request(
+                    "GET",
+                    f"/snapshots/snapshot-push/{sid}/push-in-progress",
+                    query={"companyId": cid},
+                )
+                in_prog = bool(prog.get("pushInProgress") or prog.get("inProgress")) if isinstance(prog, dict) else False
+            except HighLevelError:
+                in_prog = True
+            batches_res = backend.request(
+                "GET",
+                f"/snapshots/push-batch/v2/{sid}/batches",
+                query={"snapshotId": sid, "companyId": cid, "skip": "0", "limit": "5"},
+            )
+            batches = batches_res.get("batches", []) if isinstance(batches_res, dict) and isinstance(batches_res.get("batches"), list) else []
+            latest_batch = batches[0] if batches and isinstance(batches[0], dict) else {}
+            batch_status = latest_batch.get("status")
+            if batch_status == "completed" or (not in_prog and batch_status == "completed"):
+                break
+            time.sleep(2.5)
+
+    workflow_draft_results = []
+    if plan.get("post_push_draft_workflows"):
+        wf_plan = make_workflow_bulk_status_plan(
+            backend,
+            status="draft",
+            location_ids=target_lids,
+            only_changed=True,
+        )
+        wf_applied = apply_workflow_bulk_status_plan(
+            backend,
+            wf_plan,
+            confirm_plan=wf_plan["sha256"],
+        )
+        workflow_draft_results = wf_applied["results"]
+
+    dashboard_unlock_results = []
+    if plan.get("post_push_unlock_dashboards"):
+        for lid in target_lids:
+            d_plan = make_unlock_dashboards_plan(backend, location_id=lid, company_id=cid)
+            d_applied = apply_unlock_dashboards_plan(backend, d_plan, confirm_plan=d_plan["sha256"])
+            dashboard_unlock_results.extend(d_applied["results"])
+
+    location_histories = []
+    for lid in target_lids:
+        hist = backend.request(
+            "GET",
+            f"/snapshots/locations/{lid}/snapshot-history",
+            query={"companyId": cid, "page": "1", "limit": "5"},
+        )
+        hist_items = hist.get("data", []) if isinstance(hist, dict) and isinstance(hist.get("data"), list) else []
+        location_histories.append(
+            {
+                "location_id": lid,
+                "latest_load": hist_items[0] if hist_items else None,
+            }
+        )
+
+    return {
+        "mode": "applied",
+        "action": "push_snapshot_v2",
+        "company_id": cid,
+        "snapshot_id": sid,
+        "snapshot_name": plan.get("snapshot_name"),
+        "target_locations": target_lids,
+        "batch_status": batch_status,
+        "workflow_draft_results": workflow_draft_results,
+        "dashboard_unlock_results": dashboard_unlock_results,
+        "location_snapshot_histories": location_histories,
+        "verified": True,
+        "response": push_res,
+    }
+
+
+def make_location_full_unnerf_plan(
+    backend: BackendClient,
+    *,
+    location_id: str | None = None,
+    location_ids: list[str] | None = None,
+    user_id: str | None = None,
+    email: str | None = None,
+    company_id: str | None = None,
+    markup: int = 5,
+) -> dict[str, Any]:
+    """Build a single 5-layer governance un-nerf plan (location flags, user scopes + alias, dashboards RBAC, Custom SMTP, and 4-store rebilling)."""
+    cid = _require_company_id(backend, company_id)
+    clean_locs: list[str] = []
+    if location_ids:
+        for x in location_ids:
+            if x and x.strip():
+                lid = valid_id(x.strip())
+                if lid not in clean_locs:
+                    clean_locs.append(lid)
+    if location_id and location_id.strip():
+        lid = valid_id(location_id.strip())
+        if lid not in clean_locs:
+            clean_locs.append(lid)
+    if not clean_locs:
+        raise HighLevelError("Pass --location-id or --location-ids.")
+
+    loc_plans = [
+        make_location_unnerf_plan(backend, location_id=lid, company_id=cid)
+        for lid in clean_locs
+    ]
+    dash_plans = [
+        make_unlock_dashboards_plan(backend, location_id=lid, company_id=cid)
+        for lid in clean_locs
+    ]
+    smtp_plans = [
+        make_smtp_unlock_plan(backend, location_id=lid, company_id=cid)
+        for lid in clean_locs
+    ]
+    rebill_plans = [
+        make_rebilling_sync_plan(backend, location_id=lid, company_id=cid, markup=markup)
+        for lid in clean_locs
+    ]
+
+    user_plans: list[dict[str, Any]] = []
+    if user_id or email:
+        primary_plan = make_user_unnerf_plan(
+            backend,
+            user_id=user_id,
+            email=email,
+            company_id=cid,
+            add_location_ids=clean_locs,
+        )
+        user_plans.append(primary_plan)
+        base_em = _canonical_base_email(primary_plan.get("email") or "")
+        if base_em:
+            all_users = list_agency_users(backend, company_id=cid)["users"]
+            for u in all_users:
+                if u.get("deleted"):
+                    continue
+                uid = str(u.get("id") or "")
+                uem = str(u.get("email") or "").strip().lower()
+                if uid != primary_plan["user_id"] and _canonical_base_email(uem) == base_em:
+                    user_plans.append(
+                        make_user_unnerf_plan(
+                            backend,
+                            user_id=uid,
+                            company_id=cid,
+                            add_location_ids=clean_locs,
+                        )
+                    )
+
+    plan_core = {
+        "resource": "location_full_unnerf",
+        "action": "full_5_layer_unnerf",
+        "company_id": cid,
+        "location_ids": clean_locs,
+        "markup": int(markup),
+        "layers": {
+            "layer_1_location_permissions": loc_plans,
+            "layer_2_user_scopes": user_plans,
+            "layer_3_dashboard_rbac": dash_plans,
+            "layer_4_custom_smtp": smtp_plans,
+            "layer_5_rebilling_sync": rebill_plans,
+        },
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_location_full_unnerf_plan(
+    backend: BackendClient,
+    plan: dict[str, Any],
+    *,
+    confirm_plan: str,
+) -> dict[str, Any]:
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+
+    layers = plan.get("layers", {})
+    loc_results = []
+    for lp in layers.get("layer_1_location_permissions", []):
+        res = apply_location_unnerf_plan(backend, lp, confirm_plan=lp["sha256"])
+        loc_results.extend(res.get("results", []))
+
+    user_results = []
+    for up in layers.get("layer_2_user_scopes", []):
+        res = apply_user_unnerf_plan(
+            backend,
+            up,
+            confirm_user=up["user_id"],
+            confirm_plan=up["sha256"],
+        )
+        user_results.append(res)
+
+    dash_results = []
+    for dp in layers.get("layer_3_dashboard_rbac", []):
+        res = apply_unlock_dashboards_plan(backend, dp, confirm_plan=dp["sha256"])
+        dash_results.extend(res.get("results", []))
+
+    smtp_results = []
+    for sp in layers.get("layer_4_custom_smtp", []):
+        res = apply_smtp_unlock_plan(backend, sp, confirm_plan=sp["sha256"])
+        smtp_results.extend(res.get("results", []))
+
+    rebill_results = []
+    for rp in layers.get("layer_5_rebilling_sync", []):
+        res = apply_rebilling_sync_plan(backend, rp, confirm_plan=rp["sha256"])
+        rebill_results.extend(res.get("results", []))
+
+    return {
+        "mode": "applied",
+        "action": "full_5_layer_unnerf",
+        "company_id": plan.get("company_id"),
+        "location_ids": plan.get("location_ids"),
+        "verified": True,
+        "results": {
+            "layer_1_location_permissions": loc_results,
+            "layer_2_user_scopes": user_results,
+            "layer_3_dashboard_rbac": dash_results,
+            "layer_4_custom_smtp": smtp_results,
+            "layer_5_rebilling_sync": rebill_results,
+        },
+    }
+
+
+def _backend_brand_hits(text: str | None, terms: list[str]) -> list[str]:
+    if not text or not terms:
+        return []
+    low = str(text).lower()
+    return [t for t in terms if t and t.lower() in low]
+
+
+def inspect_location_clone_audit(
+    backend: BackendClient,
+    *,
+    location_id: str,
+    company_id: str | None = None,
+    brand_terms: list[str] | None = None,
+) -> dict[str, Any]:
+    """Deep-audit a cloned or existing sub-account via backend.leadconnectorhq.com for asset parity, workflow draft state, governance readiness, and brand-term leaks."""
+    lid = valid_id(location_id)
+    cid = _require_company_id(backend, company_id)
+    clean_terms = [t.strip() for t in (brand_terms or []) if t and t.strip()]
+
+    loc_info = list_agency_locations(backend, location_id=lid)["location"]
+    wf_info = list_location_workflows_backend(backend, location_id=lid)
+
+    pipes_res = backend.request("GET", "/opportunities/pipelines", query={"locationId": lid})
+    raw_pipes = pipes_res.get("pipelines", []) if isinstance(pipes_res, dict) and isinstance(pipes_res.get("pipelines"), list) else []
+    pipelines = [
+        {
+            "id": str(p.get("id") or ""),
+            "name": str(p.get("name") or ""),
+            "stage_count": len(p.get("stages") or []),
+            "stages": [str(s.get("name") or "") for s in (p.get("stages") or []) if isinstance(s, dict)],
+        }
+        for p in raw_pipes
+        if isinstance(p, dict)
+    ]
+
+    cals_res = backend.request("GET", "/calendars/", query={"locationId": lid})
+    raw_cals = cals_res.get("calendars", []) if isinstance(cals_res, dict) and isinstance(cals_res.get("calendars"), list) else []
+    calendars = [
+        {
+            "id": str(c.get("id") or ""),
+            "name": str(c.get("name") or ""),
+            "slug": c.get("slug"),
+            "calendarType": c.get("calendarType"),
+            "isActive": c.get("isActive"),
+        }
+        for c in raw_cals
+        if isinstance(c, dict)
+    ]
+
+    forms_res = backend.request("GET", "/forms/", query={"locationId": lid, "limit": "50"})
+    raw_forms = forms_res.get("forms", []) if isinstance(forms_res, dict) and isinstance(forms_res.get("forms"), list) else []
+    forms = [{"id": str(f.get("id") or f.get("_id") or ""), "name": str(f.get("name") or "")} for f in raw_forms if isinstance(f, dict)]
+
+    emails_res = backend.request("GET", "/emails/builder", query={"locationId": lid, "limit": "100"})
+    raw_emails = emails_res.get("builders", []) if isinstance(emails_res, dict) and isinstance(emails_res.get("builders"), list) else []
+    email_templates = [
+        {"id": str(e.get("id") or e.get("_id") or ""), "name": str(e.get("name") or e.get("title") or "")}
+        for e in raw_emails
+        if isinstance(e, dict)
+    ]
+
+    links_res = backend.request("GET", "/links/", query={"locationId": lid})
+    raw_links = links_res.get("links", []) if isinstance(links_res, dict) and isinstance(links_res.get("links"), list) else []
+    trigger_links = [
+        {"id": str(lk.get("id") or ""), "name": str(lk.get("name") or ""), "redirectTo": lk.get("redirectTo")}
+        for lk in raw_links
+        if isinstance(lk, dict)
+    ]
+
+    cv_res = backend.request("GET", f"/locations/{lid}/customValues")
+    raw_cvs = cv_res.get("customValues", []) if isinstance(cv_res, dict) and isinstance(cv_res.get("customValues"), list) else []
+    custom_values = [
+        {
+            "id": str(cv.get("id") or ""),
+            "name": str(cv.get("name") or ""),
+            "fieldKey": cv.get("fieldKey"),
+            "value": cv.get("value"),
+        }
+        for cv in raw_cvs
+        if isinstance(cv, dict)
+    ]
+    empty_custom_values = [cv for cv in custom_values if not str(cv.get("value") or "").strip()]
+
+    cf_res = backend.request("GET", f"/locations/{lid}/customFields")
+    raw_cfs = cf_res.get("customFields", []) if isinstance(cf_res, dict) and isinstance(cf_res.get("customFields"), list) else []
+
+    tags_res = backend.request("GET", f"/locations/{lid}/tags")
+    raw_tags = tags_res.get("tags", []) if isinstance(tags_res, dict) and isinstance(tags_res.get("tags"), list) else []
+
+    hist_res = backend.request(
+        "GET",
+        f"/snapshots/locations/{lid}/snapshot-history",
+        query={"companyId": cid, "page": "1", "limit": "10"},
+    )
+    snap_history = hist_res.get("data", []) if isinstance(hist_res, dict) and isinstance(hist_res.get("data"), list) else []
+
+    dash_info = inspect_dashboard_permissions(backend, location_id=lid, company_id=cid)
+    email_dom_info = inspect_email_domains(backend, location_id=lid, company_id=cid)
+    pits_info = list_private_integrations(backend, location_id=lid)
+
+    brand_matches: list[dict[str, Any]] = []
+    if clean_terms:
+        for field_name in ("name", "email", "website", "phone"):
+            val = loc_info.get(field_name)
+            hits = _backend_brand_hits(str(val or ""), clean_terms)
+            if hits:
+                brand_matches.append({"category": "business_profile", "field": field_name, "value": val, "matched_terms": hits})
+        for cv in custom_values:
+            hits = _backend_brand_hits(f"{cv.get('name', '')} {cv.get('value', '')}", clean_terms)
+            if hits:
+                brand_matches.append({"category": "custom_value", "id": cv["id"], "name": cv["name"], "value": cv.get("value"), "matched_terms": hits})
+        for p in pipelines:
+            hits = _backend_brand_hits(p.get("name"), clean_terms)
+            if hits:
+                brand_matches.append({"category": "pipeline", "id": p["id"], "name": p["name"], "matched_terms": hits})
+        for c in calendars:
+            hits = _backend_brand_hits(f"{c.get('name', '')} {c.get('slug', '')}", clean_terms)
+            if hits:
+                brand_matches.append({"category": "calendar", "id": c["id"], "name": c["name"], "slug": c.get("slug"), "matched_terms": hits})
+        for f in forms:
+            hits = _backend_brand_hits(f.get("name"), clean_terms)
+            if hits:
+                brand_matches.append({"category": "form", "id": f["id"], "name": f["name"], "matched_terms": hits})
+        for em in email_templates:
+            hits = _backend_brand_hits(em.get("name"), clean_terms)
+            if hits:
+                brand_matches.append({"category": "email_template", "id": em["id"], "name": em["name"], "matched_terms": hits})
+        for lk in trigger_links:
+            hits = _backend_brand_hits(f"{lk.get('name', '')} {lk.get('redirectTo', '')}", clean_terms)
+            if hits:
+                brand_matches.append({"category": "trigger_link", "id": lk["id"], "name": lk["name"], "redirectTo": lk.get("redirectTo"), "matched_terms": hits})
+        for wf in wf_info["workflows"]:
+            hits = _backend_brand_hits(wf.get("name"), clean_terms)
+            if hits:
+                brand_matches.append({"category": "workflow", "id": wf["id"], "name": wf["name"], "status": wf.get("status"), "matched_terms": hits})
+
+    healthy_clone = (
+        bool(loc_info.get("permissions_healthy"))
+        and bool(dash_info.get("ok"))
+        and email_dom_info.get("block_add_smtp") is False
+        and wf_info["all_workflows_draft"]
+    )
+
+    return {
+        "ok": healthy_clone,
+        "company_id": cid,
+        "location_id": lid,
+        "location_name": loc_info.get("name"),
+        "permissions_healthy": loc_info.get("permissions_healthy"),
+        "dashboards_healthy": dash_info.get("ok"),
+        "custom_smtp_unlocked": email_dom_info.get("block_add_smtp") is False,
+        "all_workflows_draft": wf_info["all_workflows_draft"],
+        "snapshot_history": snap_history,
+        "asset_counts": {
+            "workflows_total": wf_info["count"],
+            "workflows_published": wf_info["published_count"],
+            "workflows_draft": wf_info["draft_count"],
+            "pipelines": len(pipelines),
+            "calendars": len(calendars),
+            "forms": len(forms),
+            "email_templates": len(email_templates),
+            "trigger_links": len(trigger_links),
+            "custom_values": len(custom_values),
+            "custom_fields": len(raw_cfs),
+            "tags": len(raw_tags),
+            "dashboards": dash_info["count"],
+            "private_integrations": pits_info["count"],
+            "dedicated_email_domains": len(email_dom_info.get("dedicated_domains") or []),
+        },
+        "integration_risk_workflows": wf_info["integration_risk_workflows"],
+        "empty_custom_values": empty_custom_values,
+        "pipelines": pipelines,
+        "calendars": calendars,
+        "forms": forms,
+        "email_templates": email_templates,
+        "private_integrations": pits_info["private_integrations"],
+        "brand_terms_checked": clean_terms,
+        "brand_match_count": len(brand_matches),
+        "brand_matches": brand_matches,
+        "token_source": backend.token_source,
     }

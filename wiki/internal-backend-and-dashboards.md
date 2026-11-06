@@ -105,3 +105,24 @@ legends-gohighlevel rebilling-status --all-locations
 legends-gohighlevel rebilling-sync --all-locations --markup 5
 legends-gohighlevel rebilling-sync --all-locations --markup 5 --apply --confirm-plan SHA256_FROM_PREVIEW
 ```
+
+## 1-Command 5-Layer Full Un-Nerf (`location-full-unnerf`)
+
+To remediate all 5 governance layers on one or more sub-accounts (and optional user email + `+hubpro` alias) in a single preview plan and a single confirmation pass:
+
+```sh
+legends-gohighlevel location-full-unnerf --location-ids LOCATION_1,LOCATION_2 --email user@example.com
+legends-gohighlevel location-full-unnerf --location-ids LOCATION_1,LOCATION_2 --email user@example.com \
+  --apply --confirm-plan SHA256_FROM_PREVIEW
+```
+
+## Agency Snapshots V2 & Internal Bulk Workflow Status
+
+HighLevel's Snapshots V2 micro-frontend (`snapshotsApp`) and Workflow Builder service (`WorkflowService`) operate on `https://backend.leadconnectorhq.com` with both `token-id: <firebase-id-token>` and `Authorization: Bearer <firebase-id-token>`:
+
+- **List Snapshots V2:** `GET /snapshots/v2/{companyId}?companyId={companyId}&skip=0&limit=50&type=own` (`snapshots-list`)
+- **Inspect Snapshot & 16-Category Assets:** `GET /snapshots/snapshotDetails/{snapshotId}?companyId={companyId}` and `GET /snapshots/{snapshotId}/assets?type=own&companyId={companyId}` (`snapshot-inspect`)
+- **Create / Refresh Snapshot V2:** `POST /snapshots/create?companyId={companyId}` (`snapshot-create`) and `POST /snapshots/{snapshotId}/refresh?companyId={companyId}` (`snapshot-refresh`)
+- **Push Snapshot V2 to 1 or N Sub-Accounts:** `POST /snapshots/snapshot-push/v2/{snapshotId}/set_assets_to_locations?companyId={companyId}` (`snapshot-push`). By default, `snapshot-push --apply` polls push batch completion (`/snapshots/push-batch/v2/{snapshotId}/batches`), automatically bulk-switches all cloned workflows in the target sub-accounts to `draft`, and unlocks all default/custom dashboard RBAC.
+- **Internal Bulk Workflow Status (`PUT /workflow/{locationId}/change-status`):** Unlike the public Workflows API v3 beta (`PUT /workflows/{id}/status` with `Version: v3`, which returns `403 WORKFLOW_API_NOT_ENABLED_FOR_LOCATION` on non-beta sub-accounts), `PUT /workflow/{locationId}/change-status` (`{"workflowIds": [...], "status": "draft"|"published", "updatedBy": "<userId>"}`) works on 100% of locations and updates all workflows in a single HTTP request (`workflow-bulk-status`).
+- **Sub-Account Clone Readiness & Brand-Leak Audit:** `legends-gohighlevel location-clone-audit --location-id LOCATION_ID --brand-terms "oldbrand"` verifies snapshot load history, asset counts, workflow draft state, governance readiness, and brand-term occurrences across business profile, custom values, pipelines, calendars, forms, email templates, trigger links, and workflows.
