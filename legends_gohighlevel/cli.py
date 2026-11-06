@@ -9,19 +9,27 @@ import sys
 
 from . import __version__
 from .agency import (
+    apply_location_batch_clone_plan,
+    apply_location_create_plan,
     apply_location_full_unnerf_plan,
+    apply_location_rebrand_plan,
     apply_location_rename_plan,
     apply_location_unnerf_plan,
+    apply_pit_create_plan,
+    apply_pit_delete_plan,
     apply_rebilling_sync_plan,
     apply_smtp_unlock_plan,
     apply_snapshot_create_plan,
     apply_snapshot_push_plan,
     apply_snapshot_refresh_plan,
+    apply_snapshot_share_link_plan,
     apply_unlock_dashboards_plan,
     apply_user_sync_locations_plan,
     apply_user_unnerf_plan,
     apply_workflow_bulk_status_plan,
+    apply_workflow_steps_rebrand_plan,
     inspect_agency_snapshot,
+    inspect_agency_workflows_xray,
     inspect_dashboard_permissions,
     inspect_email_domains,
     inspect_location_clone_audit,
@@ -34,43 +42,77 @@ from .agency import (
     list_location_workflows_backend,
     list_private_integrations,
     live_agency_audit,
+    make_location_batch_clone_plan,
+    make_location_create_plan,
     make_location_full_unnerf_plan,
+    make_location_rebrand_plan,
     make_location_rename_plan,
     make_location_unnerf_plan,
+    make_pit_create_plan,
+    make_pit_delete_plan,
     make_rebilling_sync_plan,
     make_smtp_unlock_plan,
     make_snapshot_create_plan,
     make_snapshot_push_plan,
     make_snapshot_refresh_plan,
+    make_snapshot_share_link_plan,
     make_unlock_dashboards_plan,
     make_user_sync_locations_plan,
     make_user_unnerf_plan,
     make_workflow_bulk_status_plan,
+    make_workflow_steps_rebrand_plan,
 )
-from .api import BackendClient, Client, HighLevelError, load_agency_config, load_subaccount_config
+from .api import (
+    BackendClient,
+    Client,
+    HighLevelError,
+    delete_subaccount_profile,
+    load_agency_config,
+    load_subaccount_config,
+    save_subaccount_profile,
+    set_default_subaccount_profile,
+)
 from .crm import (
+    apply_appointment_create_plan,
+    apply_calendar_update_plan,
     apply_contact_note_plan,
     apply_contact_tag_plan,
+    apply_contact_task_plan,
     apply_contact_upsert_plan,
+    apply_conversation_send_plan,
+    apply_custom_field_plan,
     apply_custom_value_plan,
     apply_opportunity_update_plan,
+    apply_subaccount_rebrand_plan,
+    apply_subaccount_update_plan,
     apply_tag_plan,
+    apply_trigger_link_plan,
     apply_workflow_status_plan,
     inspect_profiles_matrix,
     inspect_workflow_definition,
     list_associations,
+    list_blogs,
+    list_calendar_events,
     list_calendar_free_slots,
     list_calendars,
+    list_contact_notes,
+    list_contact_tasks,
     list_conversation_ai_agents,
+    list_conversation_messages,
     list_custom_fields,
     list_custom_values,
     list_email_templates,
     list_forms,
     list_funnels,
+    list_invoices,
+    list_media_files,
     list_objects,
     list_pipelines,
+    list_products,
+    list_subaccount_users,
     list_surveys,
     list_tags,
+    list_transactions,
     list_trigger_links,
     list_voice_ai_agents,
     list_voice_ai_calls,
@@ -78,12 +120,20 @@ from .crm import (
     list_workflow_step_types,
     list_workflows,
     location_snapshot,
+    make_appointment_create_plan,
+    make_calendar_update_plan,
     make_contact_note_plan,
     make_contact_tag_plan,
+    make_contact_task_plan,
     make_contact_upsert_plan,
+    make_conversation_send_plan,
+    make_custom_field_plan,
     make_custom_value_plan,
     make_opportunity_update_plan,
+    make_subaccount_rebrand_plan,
+    make_subaccount_update_plan,
     make_tag_plan,
+    make_trigger_link_plan,
     make_workflow_status_plan,
     probe_live_lanes,
     search_contacts,
@@ -473,6 +523,268 @@ def parser() -> argparse.ArgumentParser:
     prof_mat = sub.add_parser("profiles-matrix", help="Compare asset and workflow status across multiple configured sub-account profiles in ~/.config/legends-gohighlevel/config.json.")
     prof_mat.add_argument("--profiles", help="Optional comma-separated list of profile names.")
 
+    prof_set = sub.add_parser("subaccount-profile-set", help="Save or update a named sub-account profile (location_id + PIT) in ~/.config/legends-gohighlevel/config.json.")
+    prof_set.add_argument("--profile-name", required=True, help="Profile key (e.g. klant-a or test-2).")
+    prof_set.add_argument("--location-id", required=True)
+    prof_set.add_argument("--pit", required=True, help="Sub-account Private Integration Token (pit-...).")
+    prof_set.add_argument("--name", help="Human-readable workspace label.")
+    prof_set.add_argument("--set-default", action="store_true", help="Make this profile the default sub-account profile.")
+
+    prof_use = sub.add_parser("subaccount-profile-use", help="Switch the default sub-account profile in ~/.config/legends-gohighlevel/config.json.")
+    prof_use.add_argument("--profile-name", required=True)
+
+    prof_del = sub.add_parser("subaccount-profile-delete", help="Remove a named sub-account profile from ~/.config/legends-gohighlevel/config.json.")
+    prof_del.add_argument("--profile-name", required=True)
+
+    sub_up = sub.add_parser("subaccount-update", help="Preview or apply a sub-account Business Profile update via Official API v2 (PUT /locations/:id).")
+    sub_up.add_argument("--name")
+    sub_up.add_argument("--email")
+    sub_up.add_argument("--phone")
+    sub_up.add_argument("--website")
+    sub_up.add_argument("--address")
+    sub_up.add_argument("--city")
+    sub_up.add_argument("--state")
+    sub_up.add_argument("--postal-code")
+    sub_up.add_argument("--country")
+    sub_up.add_argument("--timezone")
+    sub_up.add_argument("--logo-url")
+    sub_up.add_argument("--apply", action="store_true")
+    sub_up.add_argument("--confirm-location")
+    sub_up.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    sub_reb = sub.add_parser("subaccount-rebrand", help="Preview or apply an atomic sub-account rebrand (Business Profile, Custom Values, Trigger Links, Calendars) via Official API v2 (GHL_PIT).")
+    sub_reb.add_argument("--name")
+    sub_reb.add_argument("--email")
+    sub_reb.add_argument("--phone")
+    sub_reb.add_argument("--website")
+    sub_reb.add_argument("--address")
+    sub_reb.add_argument("--city")
+    sub_reb.add_argument("--state")
+    sub_reb.add_argument("--postal-code")
+    sub_reb.add_argument("--country")
+    sub_reb.add_argument("--timezone")
+    sub_reb.add_argument("--logo-url")
+    sub_reb.add_argument("--replace-from", help="Comma-separated list of old brand terms/URLs to replace.")
+    sub_reb.add_argument("--replace-to", help="Comma-separated list of new brand terms/URLs (1-to-1 with --replace-from).")
+    sub_reb.add_argument("--custom-values-json", help="JSON object of explicit Custom Value names/keys to values.")
+    sub_reb.add_argument("--apply", action="store_true")
+    sub_reb.add_argument("--confirm-location")
+    sub_reb.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    for cf_cmd in ("custom-field-upsert", "custom-field-delete"):
+        cfp = sub.add_parser(cf_cmd, help="Preview or apply a sub-account Custom Field creation, update, or deletion.")
+        cfp.add_argument("--name", required=True)
+        if cf_cmd == "custom-field-upsert":
+            cfp.add_argument("--data-type", default="TEXT", help="Field dataType (e.g. TEXT, LARGE_TEXT, NUMERICAL, PHONE, MONETORY, SINGLE_OPTIONS, MULTIPLE_OPTIONS, DATE).")
+            cfp.add_argument("--model", default="contact", choices=["contact", "opportunity"])
+            cfp.add_argument("--placeholder")
+            cfp.add_argument("--options", help="Comma-separated options for SINGLE_OPTIONS or MULTIPLE_OPTIONS.")
+            cfp.add_argument("--custom-field-id")
+        else:
+            cfp.add_argument("--custom-field-id")
+        cfp.add_argument("--apply", action="store_true")
+        cfp.add_argument("--confirm-location")
+        cfp.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    for tl_cmd in ("trigger-link-upsert", "trigger-link-delete"):
+        tlp = sub.add_parser(tl_cmd, help="Preview or apply a sub-account Trigger Link creation, update, or deletion.")
+        tlp.add_argument("--name", required=True)
+        if tl_cmd == "trigger-link-upsert":
+            tlp.add_argument("--redirect-to", required=True)
+            tlp.add_argument("--link-id")
+        else:
+            tlp.add_argument("--link-id")
+        tlp.add_argument("--apply", action="store_true")
+        tlp.add_argument("--confirm-location")
+        tlp.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    cal_up = sub.add_parser("calendar-update", help="Preview or apply updating a sub-account Calendar name, slug, description, or active state.")
+    cal_up.add_argument("--calendar-id", required=True)
+    cal_up.add_argument("--name")
+    cal_up.add_argument("--slug")
+    cal_up.add_argument("--description")
+    cal_up.add_argument("--active", action="store_true", help="Set calendar isActive=true.")
+    cal_up.add_argument("--inactive", action="store_true", help="Set calendar isActive=false.")
+    cal_up.add_argument("--apply", action="store_true")
+    cal_up.add_argument("--confirm-location")
+    cal_up.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    conv_msgs = sub.add_parser("conversation-messages", help="List messages inside a sub-account conversation thread.")
+    conv_msgs.add_argument("--conversation-id", required=True)
+    conv_msgs.add_argument("--limit", type=int, default=20)
+
+    conv_send = sub.add_parser("conversation-send", help="Preview or apply sending an outbound message (SMS, Email, WhatsApp, Live_Chat) to a contact.")
+    conv_send.add_argument("--contact-id", required=True)
+    conv_send.add_argument("--type", default="SMS", choices=["SMS", "Email", "WhatsApp", "Live_Chat", "IG", "FB"])
+    conv_send.add_argument("--message")
+    conv_send.add_argument("--subject")
+    conv_send.add_argument("--html")
+    conv_send.add_argument("--apply", action="store_true")
+    conv_send.add_argument("--confirm-location")
+    conv_send.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    pit_cr = sub.add_parser("pit-create", help="Preview or apply creating a full-scope Private Integration Token (pit-...) on a sub-account via backend.leadconnectorhq.com.")
+    pit_cr.add_argument("--location-id", required=True)
+    pit_cr.add_argument("--name", required=True)
+    pit_cr.add_argument("--description", default="")
+    pit_cr.add_argument("--save-profile", help="Automatically save the new PIT into ~/.config/legends-gohighlevel/config.json under this profile name.")
+    pit_cr.add_argument("--set-default-profile", action="store_true", help="Set --save-profile as the default sub-account profile.")
+    pit_cr.add_argument("--reveal-token", action="store_true", help="Include the raw unmasked token in the applied output.")
+    pit_cr.add_argument("--company-id")
+    pit_cr.add_argument("--apply", action="store_true")
+    pit_cr.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    pit_del = sub.add_parser("pit-delete", help="Preview or apply deleting a Private Integration on a sub-account via backend.leadconnectorhq.com.")
+    pit_del.add_argument("--location-id", required=True)
+    pit_del.add_argument("--integration-id", required=True)
+    pit_del.add_argument("--company-id")
+    pit_del.add_argument("--apply", action="store_true")
+    pit_del.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    loc_cr = sub.add_parser("location-create", help="Preview or apply creating a new sub-account via POST /locations/ on backend.leadconnectorhq.com.")
+    loc_cr.add_argument("--name", required=True)
+    loc_cr.add_argument("--from-location-id", help="Inherit country, timezone, and contact defaults from an existing sub-account.")
+    loc_cr.add_argument("--email")
+    loc_cr.add_argument("--phone")
+    loc_cr.add_argument("--website")
+    loc_cr.add_argument("--address")
+    loc_cr.add_argument("--city")
+    loc_cr.add_argument("--state")
+    loc_cr.add_argument("--postal-code")
+    loc_cr.add_argument("--country")
+    loc_cr.add_argument("--timezone")
+    loc_cr.add_argument("--company-id")
+    loc_cr.add_argument("--apply", action="store_true")
+    loc_cr.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    loc_bclone = sub.add_parser("location-batch-clone", help="1-command multi-sub-account batch cloner: creates N sub-accounts, pushes a V2 snapshot in 1 batch, drafts all workflows, runs 5-layer governance un-nerf + Stripe hold, and audits all clones.")
+    loc_bclone.add_argument("--source-location-id", required=True)
+    loc_bclone.add_argument("--names", required=True, help="Comma-separated list of target sub-account names to provision and clone.")
+    loc_bclone.add_argument("--snapshot-id", help="Existing V2 snapshot ID to push (if omitted, creates a fresh snapshot from --source-location-id).")
+    loc_bclone.add_argument("--assign-email", help="Assign all cloned sub-accounts to this user email (plus +hubpro alias).")
+    loc_bclone.add_argument("--assign-user-id", help="Assign all cloned sub-accounts to this user ID.")
+    loc_bclone.add_argument("--keep-workflow-status", action="store_true", help="Do not bulk-switch cloned workflows to draft.")
+    loc_bclone.add_argument("--skip-unnerf", action="store_true", help="Skip the 5-layer governance un-nerf and Stripe rebilling hold step.")
+    loc_bclone.add_argument("--create-pits", action="store_true", help="Automatically mint a 180-scope Private Integration Token on each cloned sub-account.")
+    loc_bclone.add_argument("--markup", type=int, default=5)
+    loc_bclone.add_argument("--timeout-seconds", type=int, default=180)
+    loc_bclone.add_argument("--company-id")
+    loc_bclone.add_argument("--apply", action="store_true")
+    loc_bclone.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    loc_reb = sub.add_parser("location-rebrand", help="Preview or apply an agency-level atomic sub-account rebrand (Business Profile, Custom Values, Trigger Links, Calendars, and optional internal Workflow Steps) via backend.leadconnectorhq.com.")
+    loc_reb.add_argument("--location-id", required=True)
+    loc_reb.add_argument("--name")
+    loc_reb.add_argument("--email")
+    loc_reb.add_argument("--phone")
+    loc_reb.add_argument("--website")
+    loc_reb.add_argument("--address")
+    loc_reb.add_argument("--city")
+    loc_reb.add_argument("--state")
+    loc_reb.add_argument("--postal-code")
+    loc_reb.add_argument("--country")
+    loc_reb.add_argument("--timezone")
+    loc_reb.add_argument("--logo-url")
+    loc_reb.add_argument("--replace-from", help="Comma-separated list of old brand terms/URLs to replace.")
+    loc_reb.add_argument("--replace-to", help="Comma-separated list of new brand terms/URLs (1-to-1 with --replace-from).")
+    loc_reb.add_argument("--custom-values-json", help="JSON object of explicit Custom Value names/keys to values.")
+    loc_reb.add_argument("--include-workflow-steps", action="store_true", help="Also apply --replace-from/--replace-to inside internal workflow action steps.")
+    loc_reb.add_argument("--workflow-from-name", help="Rewrite email step from_name across workflows.")
+    loc_reb.add_argument("--workflow-from-email", help="Rewrite email step from_email across workflows.")
+    loc_reb.add_argument("--workflow-pixel-id", help="Rewrite Meta CAPI step pixel_id across workflows.")
+    loc_reb.add_argument("--workflow-capi-token", help="Rewrite Meta CAPI step access_token across workflows.")
+    loc_reb.add_argument("--company-id")
+    loc_reb.add_argument("--apply", action="store_true")
+    loc_reb.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    wf_xray = sub.add_parser("agency-workflow-xray", help="Deep-inspect internal workflow action steps (email senders/preheaders, Meta CAPI pixels, webhook URLs, and brand-term leaks) via GET /workflow/:locationId/:workflowId.")
+    wf_xray.add_argument("--location-id", required=True)
+    wf_xray.add_argument("--workflow-id", help="Inspect a single workflow ID (omit to x-ray all workflows in the location).")
+    wf_xray.add_argument("--brand-terms", help="Comma-separated list of source brand terms to scan for inside workflow steps.")
+    wf_xray.add_argument("--company-id")
+
+    wf_sreb = sub.add_parser("workflow-steps-rebrand", help="Preview or apply bulk rebranding of internal workflow steps (email from_name/from_email/subject/preHeader, webhook URLs, Meta CAPI pixel_id/access_token) via PUT /workflow/:locationId/:workflowId.")
+    wf_sreb.add_argument("--location-id", required=True)
+    wf_sreb.add_argument("--workflow-ids", help="Comma-separated list of workflow IDs (omit to scan all workflows in the location).")
+    wf_sreb.add_argument("--replace-from", help="Comma-separated list of old brand terms/URLs to replace inside workflow steps.")
+    wf_sreb.add_argument("--replace-to", help="Comma-separated list of new brand terms/URLs (1-to-1 with --replace-from).")
+    wf_sreb.add_argument("--from-name", help="Explicitly set email step from_name across matching steps.")
+    wf_sreb.add_argument("--from-email", help="Explicitly set email step from_email across matching steps.")
+    wf_sreb.add_argument("--templatize-senders", action="store_true", help="Convert hardcoded email step from_name/from_email to {{location.name}} and {{location.email}}.")
+    wf_sreb.add_argument("--pixel-id", help="Explicitly set Meta CAPI step pixel_id across matching steps.")
+    wf_sreb.add_argument("--capi-access-token", help="Explicitly set Meta CAPI step access_token across matching steps.")
+    wf_sreb.add_argument("--company-id")
+    wf_sreb.add_argument("--apply", action="store_true")
+    wf_sreb.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    snap_sh = sub.add_parser("snapshot-share-link", help="Preview or apply generating a shareable snapshot link via POST /snapshots/share/v2/link.")
+    snap_sh.add_argument("--snapshot-id", required=True)
+    snap_sh.add_argument("--share-type", default="link", choices=["link", "permanent_link", "agency_restricted", "location_restricted"])
+    snap_sh.add_argument("--relationship-number", help="Required if --share-type is agency_restricted.")
+    snap_sh.add_argument("--share-location-id", help="Required if --share-type is location_restricted.")
+    snap_sh.add_argument("--company-id")
+    snap_sh.add_argument("--apply", action="store_true")
+    snap_sh.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    sub.add_parser("subaccount-users", help="List users assigned to the sub-account via Official API v2 (GET /users/?locationId=...).")
+
+    c_notes = sub.add_parser("contact-notes", help="List notes on a contact via Official API v2.")
+    c_notes.add_argument("--contact-id", required=True)
+
+    c_tasks = sub.add_parser("contact-tasks", help="List tasks on a contact via Official API v2.")
+    c_tasks.add_argument("--contact-id", required=True)
+
+    c_task_up = sub.add_parser("contact-task-upsert", help="Preview or apply creating or updating a task on a contact via Official API v2.")
+    c_task_up.add_argument("--contact-id", required=True)
+    c_task_up.add_argument("--title", required=True)
+    c_task_up.add_argument("--body")
+    c_task_up.add_argument("--due-date", help="ISO-8601 due date (e.g. 2026-12-31T17:00:00Z).")
+    c_task_up.add_argument("--completed", action="store_true")
+    c_task_up.add_argument("--assigned-to", help="User ID to assign the task to.")
+    c_task_up.add_argument("--task-id", help="Task ID to update (omit to create a new task).")
+    c_task_up.add_argument("--apply", action="store_true")
+    c_task_up.add_argument("--confirm-location")
+    c_task_up.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    cal_evs = sub.add_parser("calendar-events", help="List calendar events/appointments in the sub-account via Official API v2.")
+    cal_evs.add_argument("--calendar-id", help="Calendar ID (defaults to first sub-account calendar if omitted).")
+    cal_evs.add_argument("--user-id")
+    cal_evs.add_argument("--group-id")
+    cal_evs.add_argument("--start-time", help="Epoch ms start time (defaults to 30 days ago).")
+    cal_evs.add_argument("--end-time", help="Epoch ms end time (defaults to 60 days ahead).")
+
+    appt_cr = sub.add_parser("appointment-create", help="Preview or apply booking a calendar appointment via Official API v2.")
+    appt_cr.add_argument("--calendar-id", required=True)
+    appt_cr.add_argument("--contact-id", required=True)
+    appt_cr.add_argument("--start-time", required=True, help="ISO-8601 start time (e.g. 2026-12-01T10:00:00-05:00).")
+    appt_cr.add_argument("--end-time", help="ISO-8601 end time.")
+    appt_cr.add_argument("--title")
+    appt_cr.add_argument("--status", default="confirmed", choices=["confirmed", "new", "cancelled", "showed", "noshow", "invalid"])
+    appt_cr.add_argument("--assigned-user-id")
+    appt_cr.add_argument("--address")
+    appt_cr.add_argument("--apply", action="store_true")
+    appt_cr.add_argument("--confirm-location")
+    appt_cr.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
+    medias_cmd = sub.add_parser("medias", help="List files in the sub-account Media Library via Official API v2.")
+    medias_cmd.add_argument("--limit", type=int, default=50)
+    medias_cmd.add_argument("--query", help="Optional filename search query.")
+
+    prods_cmd = sub.add_parser("products", help="List products in the sub-account via Official API v2.")
+    prods_cmd.add_argument("--limit", type=int, default=50)
+
+    invs_cmd = sub.add_parser("invoices", help="List invoices in the sub-account via Official API v2.")
+    invs_cmd.add_argument("--limit", type=int, default=50)
+    invs_cmd.add_argument("--offset", type=int, default=0)
+
+    txs_cmd = sub.add_parser("transactions", help="List payment transactions in the sub-account via Official API v2.")
+    txs_cmd.add_argument("--limit", type=int, default=50)
+    txs_cmd.add_argument("--offset", type=int, default=0)
+
+    blogs_cmd = sub.add_parser("blogs", help="List blog sites in the sub-account via Official API v2.")
+    blogs_cmd.add_argument("--limit", type=int, default=20)
+    blogs_cmd.add_argument("--skip", type=int, default=0)
+
     sub.add_parser("social-accounts", help="List connected Social Planner accounts for GHL_LOCATION_ID.")
 
     soc_posts = sub.add_parser("social-posts", help="List Social Planner posts for GHL_LOCATION_ID.")
@@ -487,6 +799,18 @@ def parser() -> argparse.ArgumentParser:
     xb_sync.add_argument("--local-media", help="Local MP4 path override to avoid re-downloading from CDN.")
 
     return p
+
+
+def _parse_replace_pairs(replace_from: str | None, replace_to: str | None) -> list[tuple[str, str]]:
+    if not replace_from and not replace_to:
+        return []
+    if not replace_from or replace_to is None:
+        raise HighLevelError("Provide both --replace-from and --replace-to (comma-separated 1-to-1 pairs).")
+    from_items = [x.strip() for x in replace_from.split(",") if x.strip()]
+    to_items = [x.strip() for x in replace_to.split(",")]
+    if len(from_items) != len(to_items):
+        raise HighLevelError("--replace-from and --replace-to must have the same number of comma-separated items.")
+    return list(zip(from_items, to_items))
 
 
 def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
@@ -504,6 +828,18 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
         cfg = dict(load_subaccount_config(profile=getattr(args, "profile", None)))
         cfg.pop("_resolved_token", None)
         return cfg
+    if args.command == "subaccount-profile-set":
+        return save_subaccount_profile(
+            profile=args.profile_name,
+            location_id=args.location_id,
+            pit=args.pit,
+            name=args.name,
+            set_default=bool(args.set_default),
+        )
+    if args.command == "subaccount-profile-use":
+        return set_default_subaccount_profile(profile=args.profile_name)
+    if args.command == "subaccount-profile-delete":
+        return delete_subaccount_profile(profile=args.profile_name)
     if args.command == "agency-config":
         return load_agency_config()
     if args.command == "rebilling-audit":
@@ -544,6 +880,9 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
     # Internal backend commands
     if args.command in {
         "agency-locations",
+        "location-create",
+        "location-batch-clone",
+        "location-rebrand",
         "location-rename",
         "location-unnerf",
         "location-full-unnerf",
@@ -559,15 +898,20 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
         "rebilling-status",
         "rebilling-sync",
         "pit-list",
+        "pit-create",
+        "pit-delete",
         "email-domains",
         "live-audit",
         "agency-workflows",
+        "agency-workflow-xray",
         "workflow-bulk-status",
+        "workflow-steps-rebrand",
         "snapshots-list",
         "snapshot-inspect",
         "snapshot-create",
         "snapshot-refresh",
         "snapshot-push",
+        "snapshot-share-link",
     }:
         if args.command == "location-rename":
             has_conf = bool(args.confirm_location or args.confirm_plan)
@@ -584,13 +928,20 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
         if args.command in {
             "unlock-dashboards",
             "smtp-unlock",
+            "location-create",
+            "location-batch-clone",
+            "location-rebrand",
             "location-unnerf",
             "location-full-unnerf",
             "rebilling-sync",
+            "pit-create",
+            "pit-delete",
             "workflow-bulk-status",
+            "workflow-steps-rebrand",
             "snapshot-create",
             "snapshot-refresh",
             "snapshot-push",
+            "snapshot-share-link",
         }:
             if args.apply and not args.confirm_plan:
                 raise HighLevelError("--apply requires --confirm-plan.")
@@ -887,16 +1238,190 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
                 company_id=args.company_id,
                 brand_terms=terms,
             )
+        if args.command == "pit-create":
+            plan = make_pit_create_plan(
+                backend,
+                location_id=args.location_id,
+                name=args.name,
+                description=args.description,
+                save_profile=args.save_profile,
+                set_default_profile=bool(args.set_default_profile),
+            )
+            if not args.apply:
+                return {"mode": "preview", "plan": plan, "writes_sent": 0}
+            return apply_pit_create_plan(
+                backend,
+                plan,
+                confirm_plan=args.confirm_plan,
+                reveal_token=bool(args.reveal_token),
+            )
+        if args.command == "pit-delete":
+            plan = make_pit_delete_plan(
+                backend,
+                location_id=args.location_id,
+                integration_id=args.integration_id,
+            )
+            if not args.apply:
+                return {"mode": "preview", "plan": plan, "writes_sent": 0}
+            return apply_pit_delete_plan(
+                backend,
+                plan,
+                confirm_plan=args.confirm_plan,
+            )
+        if args.command == "location-create":
+            plan = make_location_create_plan(
+                backend,
+                name=args.name,
+                from_location_id=args.from_location_id,
+                email=args.email,
+                phone=args.phone,
+                website=args.website,
+                address=args.address,
+                city=args.city,
+                state=args.state,
+                postal_code=args.postal_code,
+                country=args.country,
+                timezone=args.timezone,
+                company_id=args.company_id,
+            )
+            if not args.apply:
+                return {"mode": "preview", "plan": plan, "writes_sent": 0}
+            return apply_location_create_plan(
+                backend,
+                plan,
+                confirm_plan=args.confirm_plan,
+            )
+        if args.command == "location-batch-clone":
+            target_names = [x.strip() for x in args.names.split(",") if x.strip()]
+            plan = make_location_batch_clone_plan(
+                backend,
+                source_location_id=args.source_location_id,
+                names=target_names,
+                snapshot_id=args.snapshot_id,
+                assign_email=args.assign_email,
+                assign_user_id=args.assign_user_id,
+                draft_workflows=not bool(args.keep_workflow_status),
+                full_unnerf=not bool(args.skip_unnerf),
+                markup=args.markup,
+                create_pits=bool(args.create_pits),
+                company_id=args.company_id,
+            )
+            if not args.apply:
+                return {"mode": "preview", "plan": plan, "writes_sent": 0}
+            return apply_location_batch_clone_plan(
+                backend,
+                plan,
+                confirm_plan=args.confirm_plan,
+                timeout_seconds=args.timeout_seconds,
+            )
+        if args.command == "location-rebrand":
+            pairs = _parse_replace_pairs(args.replace_from, args.replace_to)
+            cv_map = json.loads(args.custom_values_json) if args.custom_values_json else None
+            if cv_map is not None and not isinstance(cv_map, dict):
+                raise HighLevelError("--custom-values-json must be a JSON object.")
+            plan = make_location_rebrand_plan(
+                backend,
+                location_id=args.location_id,
+                company_id=args.company_id,
+                name=args.name,
+                email=args.email,
+                phone=args.phone,
+                website=args.website,
+                address=args.address,
+                city=args.city,
+                state=args.state,
+                postal_code=args.postal_code,
+                country=args.country,
+                timezone=args.timezone,
+                logo_url=args.logo_url,
+                replace_pairs=pairs,
+                custom_values_override=cv_map,
+                include_workflow_steps=bool(args.include_workflow_steps),
+                workflow_from_name=args.workflow_from_name,
+                workflow_from_email=args.workflow_from_email,
+                workflow_pixel_id=args.workflow_pixel_id,
+                workflow_capi_token=args.workflow_capi_token,
+            )
+            if not args.apply:
+                return {"mode": "preview", "plan": plan, "writes_sent": 0}
+            return apply_location_rebrand_plan(
+                backend,
+                plan,
+                confirm_plan=args.confirm_plan,
+            )
+        if args.command == "agency-workflow-xray":
+            terms = (
+                [x.strip() for x in args.brand_terms.split(",") if x.strip()]
+                if args.brand_terms
+                else None
+            )
+            return inspect_agency_workflows_xray(
+                backend,
+                location_id=args.location_id,
+                workflow_id=args.workflow_id,
+                brand_terms=terms,
+            )
+        if args.command == "workflow-steps-rebrand":
+            pairs = _parse_replace_pairs(args.replace_from, args.replace_to)
+            wf_ids = (
+                [x.strip() for x in args.workflow_ids.split(",") if x.strip()]
+                if args.workflow_ids
+                else None
+            )
+            plan = make_workflow_steps_rebrand_plan(
+                backend,
+                location_id=args.location_id,
+                workflow_ids=wf_ids,
+                replace_pairs=pairs,
+                from_name=args.from_name,
+                from_email=args.from_email,
+                pixel_id=args.pixel_id,
+                capi_access_token=args.capi_access_token,
+                templatize_senders=bool(args.templatize_senders),
+            )
+            if not args.apply:
+                return {"mode": "preview", "plan": plan, "writes_sent": 0}
+            return apply_workflow_steps_rebrand_plan(
+                backend,
+                plan,
+                confirm_plan=args.confirm_plan,
+            )
+        if args.command == "snapshot-share-link":
+            plan = make_snapshot_share_link_plan(
+                backend,
+                snapshot_id=args.snapshot_id,
+                share_type=args.share_type,
+                company_id=args.company_id,
+                relationship_number=args.relationship_number,
+                share_location_id=args.share_location_id,
+            )
+            if not args.apply:
+                return {"mode": "preview", "plan": plan, "writes_sent": 0}
+            return apply_snapshot_share_link_plan(
+                backend,
+                plan,
+                confirm_plan=args.confirm_plan,
+            )
 
     if args.command in {
         "custom-value-upsert",
         "custom-value-delete",
+        "custom-field-upsert",
+        "custom-field-delete",
+        "trigger-link-upsert",
+        "trigger-link-delete",
+        "calendar-update",
+        "appointment-create",
+        "conversation-send",
+        "subaccount-update",
+        "subaccount-rebrand",
         "workflow-status",
         "tag-upsert",
         "tag-delete",
         "contact-upsert",
         "contact-tag",
         "contact-note",
+        "contact-task-upsert",
         "opportunity-update",
     }:
         confirmations = bool(args.confirm_location or args.confirm_plan)
@@ -918,10 +1443,207 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
             else None
         )
         return subaccount_rebrand_audit(client, brand_terms=terms)
+    if args.command == "subaccount-update":
+        su_plan = make_subaccount_update_plan(
+            client,
+            name=args.name,
+            email=args.email,
+            phone=args.phone,
+            website=args.website,
+            address=args.address,
+            city=args.city,
+            state=args.state,
+            postal_code=args.postal_code,
+            country=args.country,
+            timezone=args.timezone,
+            logo_url=args.logo_url,
+        )
+        if not args.apply:
+            return {"mode": "preview", "plan": su_plan, "writes_sent": 0}
+        return apply_subaccount_update_plan(
+            client,
+            su_plan,
+            confirm_location=args.confirm_location,
+            confirm_plan=args.confirm_plan,
+        )
+    if args.command == "subaccount-rebrand":
+        pairs = _parse_replace_pairs(args.replace_from, args.replace_to)
+        cv_map = json.loads(args.custom_values_json) if args.custom_values_json else None
+        if cv_map is not None and not isinstance(cv_map, dict):
+            raise HighLevelError("--custom-values-json must be a JSON object.")
+        sr_plan = make_subaccount_rebrand_plan(
+            client,
+            name=args.name,
+            email=args.email,
+            phone=args.phone,
+            website=args.website,
+            address=args.address,
+            city=args.city,
+            state=args.state,
+            postal_code=args.postal_code,
+            country=args.country,
+            timezone=args.timezone,
+            logo_url=args.logo_url,
+            replace_pairs=pairs,
+            custom_values_override=cv_map,
+        )
+        if not args.apply:
+            return {"mode": "preview", "plan": sr_plan, "writes_sent": 0}
+        return apply_subaccount_rebrand_plan(
+            client,
+            sr_plan,
+            confirm_location=args.confirm_location,
+            confirm_plan=args.confirm_plan,
+        )
+    if args.command in {"custom-field-upsert", "custom-field-delete"}:
+        cf_action = "delete" if args.command == "custom-field-delete" else "upsert"
+        opts = [x.strip() for x in args.options.split(",") if x.strip()] if getattr(args, "options", None) else None
+        cf_plan = make_custom_field_plan(
+            client,
+            action=cf_action,
+            name=args.name,
+            data_type=getattr(args, "data_type", "TEXT"),
+            model=getattr(args, "model", "contact"),
+            placeholder=getattr(args, "placeholder", None),
+            options=opts,
+            custom_field_id=getattr(args, "custom_field_id", None),
+        )
+        if not args.apply:
+            return {"mode": "preview", "plan": cf_plan, "writes_sent": 0}
+        return apply_custom_field_plan(
+            client,
+            cf_plan,
+            confirm_location=args.confirm_location,
+            confirm_plan=args.confirm_plan,
+        )
+    if args.command in {"trigger-link-upsert", "trigger-link-delete"}:
+        tl_action = "delete" if args.command == "trigger-link-delete" else "upsert"
+        tl_plan = make_trigger_link_plan(
+            client,
+            action=tl_action,
+            name=args.name,
+            redirect_to=getattr(args, "redirect_to", None),
+            link_id=getattr(args, "link_id", None),
+        )
+        if not args.apply:
+            return {"mode": "preview", "plan": tl_plan, "writes_sent": 0}
+        return apply_trigger_link_plan(
+            client,
+            tl_plan,
+            confirm_location=args.confirm_location,
+            confirm_plan=args.confirm_plan,
+        )
+    if args.command == "calendar-update":
+        if args.active and args.inactive:
+            raise HighLevelError("Pass either --active or --inactive, not both.")
+        is_act = True if args.active else (False if args.inactive else None)
+        cal_plan = make_calendar_update_plan(
+            client,
+            calendar_id=args.calendar_id,
+            name=args.name,
+            slug=args.slug,
+            description=args.description,
+            is_active=is_act,
+        )
+        if not args.apply:
+            return {"mode": "preview", "plan": cal_plan, "writes_sent": 0}
+        return apply_calendar_update_plan(
+            client,
+            cal_plan,
+            confirm_location=args.confirm_location,
+            confirm_plan=args.confirm_plan,
+        )
+    if args.command == "conversation-messages":
+        return list_conversation_messages(
+            client,
+            conversation_id=args.conversation_id,
+            limit=args.limit,
+        )
+    if args.command == "conversation-send":
+        cs_plan = make_conversation_send_plan(
+            client,
+            contact_id=args.contact_id,
+            message_type=args.type,
+            message=args.message,
+            subject=args.subject,
+            html=args.html,
+        )
+        if not args.apply:
+            return {"mode": "preview", "plan": cs_plan, "writes_sent": 0}
+        return apply_conversation_send_plan(
+            client,
+            cs_plan,
+            confirm_location=args.confirm_location,
+            confirm_plan=args.confirm_plan,
+        )
     if args.command == "email-templates":
         return list_email_templates(client, limit=args.limit)
     if args.command == "trigger-links":
         return list_trigger_links(client)
+    if args.command == "subaccount-users":
+        return list_subaccount_users(client)
+    if args.command == "contact-notes":
+        return list_contact_notes(client, contact_id=args.contact_id)
+    if args.command == "contact-tasks":
+        return list_contact_tasks(client, contact_id=args.contact_id)
+    if args.command == "contact-task-upsert":
+        ctk_plan = make_contact_task_plan(
+            client,
+            contact_id=args.contact_id,
+            title=args.title,
+            body=args.body,
+            due_date=args.due_date,
+            completed=bool(args.completed),
+            assigned_to=args.assigned_to,
+            task_id=args.task_id,
+        )
+        if not args.apply:
+            return {"mode": "preview", "plan": ctk_plan, "writes_sent": 0}
+        return apply_contact_task_plan(
+            client,
+            ctk_plan,
+            confirm_location=args.confirm_location,
+            confirm_plan=args.confirm_plan,
+        )
+    if args.command == "calendar-events":
+        return list_calendar_events(
+            client,
+            calendar_id=args.calendar_id,
+            user_id=args.user_id,
+            group_id=args.group_id,
+            start_time=args.start_time,
+            end_time=args.end_time,
+        )
+    if args.command == "appointment-create":
+        ap_plan = make_appointment_create_plan(
+            client,
+            calendar_id=args.calendar_id,
+            contact_id=args.contact_id,
+            start_time=args.start_time,
+            end_time=args.end_time,
+            title=args.title,
+            appointment_status=args.status,
+            assigned_user_id=args.assigned_user_id,
+            address=args.address,
+        )
+        if not args.apply:
+            return {"mode": "preview", "plan": ap_plan, "writes_sent": 0}
+        return apply_appointment_create_plan(
+            client,
+            ap_plan,
+            confirm_location=args.confirm_location,
+            confirm_plan=args.confirm_plan,
+        )
+    if args.command == "medias":
+        return list_media_files(client, limit=args.limit, query_str=args.query)
+    if args.command == "products":
+        return list_products(client, limit=args.limit)
+    if args.command == "invoices":
+        return list_invoices(client, limit=args.limit, offset=args.offset)
+    if args.command == "transactions":
+        return list_transactions(client, limit=args.limit, offset=args.offset)
+    if args.command == "blogs":
+        return list_blogs(client, limit=args.limit, skip=args.skip)
     if args.command == "location":
         return location_snapshot(client)
     if args.command == "custom-values":

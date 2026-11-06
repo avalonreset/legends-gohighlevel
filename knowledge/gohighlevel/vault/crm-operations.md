@@ -113,3 +113,41 @@ legends-gohighlevel contact-note --contact-id CONTACT_ID --body "Completed disco
 
 legends-gohighlevel opportunity-update --opportunity-id OPP_ID --stage-id STAGE_ID --status won --monetary-value 2500
 ```
+
+## 7. Multi-location profile management, atomic sub-account rebranding, and extended CRM/commerce operations
+
+Sub-account managers operating multiple client or test locations via Official API v2 (`GHL_PIT`) can manage named profiles in `~/.config/legends-gohighlevel/config.json` and execute atomic rebranding or extended CRM operations:
+
+```sh
+# Manage named sub-account profiles
+legends-gohighlevel subaccount-profile-set --profile-name client-a --location-id LOCATION_ID --pit pit-xxxx --set-default
+legends-gohighlevel subaccount-profile-use --profile-name client-a
+legends-gohighlevel subaccount-profile-delete --profile-name old-profile
+legends-gohighlevel profiles-matrix
+
+# Update Business Profile or run an atomic rebrand across Profile + Custom Values + Trigger Links + Calendars
+legends-gohighlevel subaccount-update --name "New Brand LLC" --website "https://newbrand.com"
+legends-gohighlevel subaccount-rebrand --name "New Brand LLC" \
+  --replace-from "OldBrand,oldbrand.com" --replace-to "NewBrand,newbrand.com" \
+  --custom-values-json '{"Support Email": "hello@newbrand.com"}'
+
+# Custom Fields, Trigger Links, Calendars, Appointments, Tasks, and Outbound Messaging
+legends-gohighlevel custom-field-upsert --name "VAT Number" --data-type TEXT
+legends-gohighlevel trigger-link-upsert --name "Intake Link" --redirect-to "https://newbrand.com/intake"
+legends-gohighlevel calendar-update --calendar-id CALENDAR_ID --name "Strategy Call" --active
+legends-gohighlevel calendar-events --calendar-id CALENDAR_ID
+legends-gohighlevel appointment-create --calendar-id CALENDAR_ID --contact-id CONTACT_ID --start-time "2026-12-01T14:00:00Z" --title "Strategy Call"
+legends-gohighlevel contact-notes --contact-id CONTACT_ID
+legends-gohighlevel contact-tasks --contact-id CONTACT_ID
+legends-gohighlevel contact-task-upsert --contact-id CONTACT_ID --title "Send proposal"
+legends-gohighlevel conversation-messages --conversation-id CONVERSATION_ID
+legends-gohighlevel conversation-send --contact-id CONTACT_ID --type SMS --message "Looking forward to our call!"
+
+# Sub-account users, Media Library, Products, Invoices, Transactions, and Blogs
+legends-gohighlevel subaccount-users
+legends-gohighlevel medias --limit 50
+legends-gohighlevel products --limit 50
+legends-gohighlevel invoices --limit 50
+legends-gohighlevel transactions --limit 50
+legends-gohighlevel blogs --limit 20
+```

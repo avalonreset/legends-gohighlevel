@@ -19,9 +19,14 @@ def main() -> int:
     parser.add_argument("--pack", type=Path, default=default_pack)
     args = parser.parse_args()
     sys.path.insert(0, str(args.empire_source.resolve()))
-    from claude_empire import __version__ as empire_version
-    from claude_empire.knowledge import attachment_bundle, load_pack
-    from claude_empire.transaction import TransactionError, apply_bundle, inspect_bundle
+    try:
+        from legends_empire import __version__ as empire_version
+        from legends_empire.knowledge import attachment_bundle, load_pack
+        from legends_empire.transaction import TransactionError, apply_bundle, inspect_bundle
+    except ImportError:
+        from claude_empire import __version__ as empire_version
+        from claude_empire.knowledge import attachment_bundle, load_pack
+        from claude_empire.transaction import TransactionError, apply_bundle, inspect_bundle
 
     if os.name == "nt":
         try:

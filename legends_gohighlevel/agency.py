@@ -1,11 +1,12 @@
 """Live agency, sub-account, user scope, Custom SMTP, and dashboard RBAC operations via HighLevel internal backend."""
 from __future__ import annotations
 
+import json
 import re
 import time
 from typing import Any
 
-from .api import BackendClient, HighLevelError, valid_id
+from .api import BackendClient, HighLevelError, _mask_token, save_subaccount_profile, valid_id
 from .crm import plan_digest
 from .governance import (
     AGENCY_ONLY_V2_SCOPES,
@@ -2571,3 +2572,1214 @@ def inspect_location_clone_audit(
         "brand_matches": brand_matches,
         "token_source": backend.token_source,
     }
+
+
+AGENCY_ONLY_PIT_SCOPES: tuple[str, ...] = (
+    "wallet.readonly",
+    "wallet.write",
+    "companies.readonly",
+    "locations.write",
+    "oauth.write",
+    "oauth.readonly",
+    "saas/company.read",
+    "saas/company.write",
+    "snapshots.readonly",
+    "snapshots.write",
+    "custom-menu-link.readonly",
+    "custom-menu-link.write",
+    "marketplace-external-auth-migration.write",
+)
+
+
+def _fetch_location_pit_scopes(backend: BackendClient) -> list[str]:
+    raw = backend.request("GET", "/oauth/static/scopes")
+    items = raw.get("scopes", raw) if isinstance(raw, dict) else raw
+    if not isinstance(items, list):
+        return list(CRITICAL_ACCOUNT_ADMIN_V2_SCOPES)
+    excluded = set(AGENCY_ONLY_PIT_SCOPES)
+    return [str(s) for s in items if isinstance(s, str) and s not in excluded]
+
+
+def make_pit_create_plan(
+    backend: BackendClient,
+    *,
+    location_id: str,
+    name: str,
+    description: str = "",
+    scopes: list[str] | None = None,
+    save_profile: str | None = None,
+    set_default_profile: bool = False,
+) -> dict[str, Any]:
+    lid = valid_id(location_id)
+    clean_name = (name or "").strip()
+    if not clean_name:
+        raise HighLevelError("Private Integration --name is required.")
+    resolved_scopes = scopes if scopes else _fetch_location_pit_scopes(backend)
+    payload = {
+        "locationId": lid,
+        "name": clean_name,
+        "description": (description or "").strip(),
+        "scopes": resolved_scopes,
+    }
+    plan_core = {
+        "resource": "private_integration",
+        "action": "create_pit",
+        "location_id": lid,
+        "name": clean_name,
+        "description": payload["description"],
+        "scopes_count": len(resolved_scopes),
+        "save_profile": (save_profile or "").strip() or None,
+        "set_default_profile": bool(set_default_profile),
+        "proposed_request": {
+            "method": "POST",
+            "path": f"/marketplace/private-integration/location/{lid}",
+            "payload": payload,
+        },
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_pit_create_plan(
+    backend: BackendClient,
+    plan: dict[str, Any],
+    *,
+    confirm_plan: str,
+    reveal_token: bool = False,
+) -> dict[str, Any]:
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+    lid = valid_id(plan["location_id"])
+    req = plan["proposed_request"]
+    res = backend.request(req["method"], req["path"], body=req["payload"])
+    if not isinstance(res, dict):
+        raise HighLevelError("Unexpected response from Private Integration creation.")
+    raw_tok = str(res.get("activeToken") or res.get("token") or "").strip()
+    pid = str(res.get("_id") or res.get("id") or "")
+
+    profile_saved = None
+    if plan.get("save_profile") and raw_tok:
+        profile_saved = save_subaccount_profile(
+            profile=str(plan["save_profile"]),
+            location_id=lid,
+            pit=raw_tok,
+            name=plan["name"],
+            set_default=bool(plan.get("set_default_profile")),
+        )
+
+    out: dict[str, Any] = {
+        "mode": "applied",
+        "action": "create_pit",
+        "location_id": lid,
+        "integration_id": pid,
+        "name": res.get("name") or plan["name"],
+        "scopes_count": len(res.get("scopes") or []),
+        "token_masked": _mask_token(raw_tok),
+        "profile_saved": profile_saved,
+        "verified": bool(pid and raw_tok),
+    }
+    if reveal_token:
+        out["token"] = raw_tok
+    return out
+
+
+def make_pit_delete_plan(
+    backend: BackendClient,
+    *,
+    location_id: str,
+    integration_id: str,
+) -> dict[str, Any]:
+    lid = valid_id(location_id)
+    pid = valid_id(integration_id)
+    existing = list_private_integrations(backend, location_id=lid)["private_integrations"]
+    matched = next((item for item in existing if item["id"] == pid), None)
+    plan_core = {
+        "resource": "private_integration",
+        "action": "delete_pit",
+        "location_id": lid,
+        "integration_id": pid,
+        "before": matched,
+        "proposed_request": {
+            "method": "DELETE",
+            "path": f"/marketplace/private-integration/location/{lid}/integration/{pid}",
+            "payload": None,
+        },
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_pit_delete_plan(
+    backend: BackendClient,
+    plan: dict[str, Any],
+    *,
+    confirm_plan: str,
+) -> dict[str, Any]:
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+    req = plan["proposed_request"]
+    res = backend.request(req["method"], req["path"])
+    return {
+        "mode": "applied",
+        "action": "delete_pit",
+        "location_id": plan["location_id"],
+        "integration_id": plan["integration_id"],
+        "verified": True,
+        "response": res,
+    }
+
+
+def make_location_create_plan(
+    backend: BackendClient,
+    *,
+    name: str,
+    email: str | None = None,
+    phone: str | None = None,
+    website: str | None = None,
+    address: str | None = None,
+    city: str | None = None,
+    state: str | None = None,
+    postal_code: str | None = None,
+    country: str | None = None,
+    timezone: str | None = None,
+    from_location_id: str | None = None,
+    company_id: str | None = None,
+) -> dict[str, Any]:
+    cid = _require_company_id(backend, company_id)
+    clean_name = (name or "").strip()
+    if not clean_name:
+        raise HighLevelError("Sub-account --name is required.")
+
+    src_loc: dict[str, Any] = {}
+    if from_location_id:
+        src_lid = valid_id(from_location_id)
+        src_res = backend.request("GET", f"/locations/{src_lid}")
+        src_obj = src_res.get("location", src_res)
+        if isinstance(src_obj, dict):
+            src_loc = src_obj
+
+    payload: dict[str, Any] = {
+        "companyId": cid,
+        "name": clean_name,
+        "country": (country or src_loc.get("country") or "US").strip(),
+        "timezone": (timezone or src_loc.get("timezone") or "America/New_York").strip(),
+        "email": (email or src_loc.get("email") or "support@rankyrank.com").strip(),
+        "phone": (phone or src_loc.get("phone") or "").strip(),
+        "address": (address or src_loc.get("address") or "Main Street 1").strip(),
+        "city": (city or src_loc.get("city") or "New York").strip(),
+        "state": (state or src_loc.get("state") or "").strip(),
+        "postalCode": (postal_code or src_loc.get("postalCode") or "10001").strip(),
+        "website": (website or src_loc.get("website") or "").strip(),
+        "settings": {
+            "allowDuplicateContact": False,
+            "allowDuplicateOpportunity": False,
+            "allowFacebookNameMerge": True,
+            "disableContactTimezone": False,
+        },
+    }
+    plan_core = {
+        "resource": "location",
+        "action": "create_location",
+        "company_id": cid,
+        "from_location_id": valid_id(from_location_id) if from_location_id else None,
+        "proposed_request": {
+            "method": "POST",
+            "path": "/locations/",
+            "payload": payload,
+        },
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_location_create_plan(
+    backend: BackendClient,
+    plan: dict[str, Any],
+    *,
+    confirm_plan: str,
+) -> dict[str, Any]:
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+    req = plan["proposed_request"]
+    res = backend.request(req["method"], req["path"], body=req["payload"])
+    loc = res.get("location", res) if isinstance(res, dict) else {}
+    lid = str(loc.get("id") or loc.get("_id") or "")
+    if not lid:
+        raise HighLevelError("Sub-account creation did not return a valid location ID.")
+    return {
+        "mode": "applied",
+        "action": "create_location",
+        "company_id": plan["company_id"],
+        "location_id": lid,
+        "name": loc.get("name") or req["payload"]["name"],
+        "country": loc.get("country"),
+        "timezone": loc.get("timezone"),
+        "verified": True,
+    }
+
+
+def make_location_batch_clone_plan(
+    backend: BackendClient,
+    *,
+    source_location_id: str,
+    names: list[str],
+    snapshot_id: str | None = None,
+    assign_email: str | None = None,
+    assign_user_id: str | None = None,
+    draft_workflows: bool = True,
+    full_unnerf: bool = True,
+    markup: int = 5,
+    create_pits: bool = False,
+    company_id: str | None = None,
+) -> dict[str, Any]:
+    """Build a 1-command multi-sub-account batch clone plan (create locations -> push V2 snapshot -> draft workflows -> 5-layer unnerf + Stripe hold -> audit)."""
+    cid = _require_company_id(backend, company_id)
+    src_lid = valid_id(source_location_id)
+    clean_names = [n.strip() for n in names if n and n.strip()]
+    if not clean_names:
+        raise HighLevelError("Provide at least one target sub-account name in --names.")
+
+    src_res = backend.request("GET", f"/locations/{src_lid}")
+    src_loc = src_res.get("location", src_res)
+    if not isinstance(src_loc, dict):
+        raise HighLevelError(f"Could not inspect source location {src_lid}.")
+
+    resolved_snapshot_id = valid_id(snapshot_id) if snapshot_id else None
+    snapshot_name = None
+    if resolved_snapshot_id:
+        snap_info = inspect_agency_snapshot(backend, snapshot_id=resolved_snapshot_id, company_id=cid)
+        snapshot_name = snap_info.get("name") or (snap_info.get("snapshot") or {}).get("name")
+
+    create_plans = [
+        make_location_create_plan(
+            backend,
+            name=target_name,
+            from_location_id=src_lid,
+            company_id=cid,
+        )["proposed_request"]
+        for target_name in clean_names
+    ]
+
+    plan_core = {
+        "resource": "location_batch_clone",
+        "action": "batch_clone_locations",
+        "company_id": cid,
+        "source_location_id": src_lid,
+        "source_location_name": src_loc.get("name"),
+        "snapshot_id": resolved_snapshot_id,
+        "snapshot_name": snapshot_name,
+        "target_names": clean_names,
+        "target_count": len(clean_names),
+        "assign_email": (assign_email or "").strip() or None,
+        "assign_user_id": valid_id(assign_user_id) if assign_user_id else None,
+        "draft_workflows": bool(draft_workflows),
+        "full_unnerf": bool(full_unnerf),
+        "markup": int(markup),
+        "create_pits": bool(create_pits),
+        "create_requests": create_plans,
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_location_batch_clone_plan(
+    backend: BackendClient,
+    plan: dict[str, Any],
+    *,
+    confirm_plan: str,
+    timeout_seconds: int = 180,
+) -> dict[str, Any]:
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+
+    cid = valid_id(plan["company_id"])
+    src_lid = valid_id(plan["source_location_id"])
+    sid = plan.get("snapshot_id")
+
+    if not sid:
+        snap_plan = make_snapshot_create_plan(
+            backend,
+            name=f"{plan.get('source_location_name') or src_lid} Clone Snapshot",
+            location_id=src_lid,
+            company_id=cid,
+        )
+        snap_res = apply_snapshot_create_plan(
+            backend,
+            snap_plan,
+            confirm_plan=snap_plan["sha256"],
+            wait=True,
+            timeout_seconds=timeout_seconds,
+        )
+        sid = snap_res["snapshot_id"]
+
+    created_locations: list[dict[str, Any]] = []
+    target_lids: list[str] = []
+    for req in plan.get("create_requests", []):
+        res = backend.request(req["method"], req["path"], body=req["payload"])
+        loc = res.get("location", res) if isinstance(res, dict) else {}
+        lid = str(loc.get("id") or loc.get("_id") or "")
+        if not lid:
+            raise HighLevelError("Batch clone failed to obtain location ID for created sub-account.")
+        target_lids.append(lid)
+        created_locations.append(
+            {
+                "location_id": lid,
+                "name": loc.get("name") or req["payload"]["name"],
+                "country": loc.get("country"),
+                "timezone": loc.get("timezone"),
+            }
+        )
+
+    push_plan = make_snapshot_push_plan(
+        backend,
+        snapshot_id=sid,
+        location_ids=target_lids,
+        company_id=cid,
+        draft_workflows=bool(plan.get("draft_workflows", True)),
+        unlock_dashboards=True,
+    )
+    push_applied = apply_snapshot_push_plan(
+        backend,
+        push_plan,
+        confirm_plan=push_plan["sha256"],
+        wait=True,
+        timeout_seconds=timeout_seconds,
+    )
+
+    unnerf_applied = None
+    if plan.get("full_unnerf", True):
+        unnerf_plan = make_location_full_unnerf_plan(
+            backend,
+            location_ids=target_lids,
+            user_id=plan.get("assign_user_id"),
+            email=plan.get("assign_email"),
+            company_id=cid,
+            markup=int(plan.get("markup", 5)),
+        )
+        unnerf_applied = apply_location_full_unnerf_plan(
+            backend,
+            unnerf_plan,
+            confirm_plan=unnerf_plan["sha256"],
+        )
+
+    created_pits: list[dict[str, Any]] = []
+    if plan.get("create_pits"):
+        for item in created_locations:
+            lid = item["location_id"]
+            pit_plan = make_pit_create_plan(
+                backend,
+                location_id=lid,
+                name=f"{item['name']} Agent Integration",
+                description="Auto-provisioned by legends-gohighlevel batch clone",
+            )
+            pit_res = apply_pit_create_plan(backend, pit_plan, confirm_plan=pit_plan["sha256"])
+            created_pits.append(pit_res)
+
+    audits = [
+        inspect_location_clone_audit(backend, location_id=lid, company_id=cid)
+        for lid in target_lids
+    ]
+
+    return {
+        "mode": "applied",
+        "action": "batch_clone_locations",
+        "company_id": cid,
+        "source_location_id": src_lid,
+        "snapshot_id": sid,
+        "created_locations": created_locations,
+        "snapshot_push": {
+            "batch_status": push_applied.get("batch_status"),
+            "workflow_draft_results": push_applied.get("workflow_draft_results"),
+        },
+        "full_unnerf_verified": bool(unnerf_applied and unnerf_applied.get("verified")),
+        "created_pits": created_pits,
+        "clone_audits": [
+            {
+                "location_id": a["location_id"],
+                "location_name": a["location_name"],
+                "ok": a["ok"],
+                "all_workflows_draft": a["all_workflows_draft"],
+                "permissions_healthy": a["permissions_healthy"],
+                "dashboards_healthy": a["dashboards_healthy"],
+                "custom_smtp_unlocked": a["custom_smtp_unlocked"],
+                "asset_counts": a["asset_counts"],
+            }
+            for a in audits
+        ],
+        "verified": all(a["ok"] for a in audits),
+    }
+
+
+def _apply_backend_replacements(text: str, replacements: list[tuple[str, str]]) -> str:
+    out = text
+    for old_val, new_val in replacements:
+        if not old_val:
+            continue
+        pattern = re.compile(re.escape(old_val), re.IGNORECASE)
+        out = pattern.sub(new_val, out)
+    return out
+
+
+def make_location_rebrand_plan(
+    backend: BackendClient,
+    *,
+    location_id: str,
+    company_id: str | None = None,
+    name: str | None = None,
+    email: str | None = None,
+    phone: str | None = None,
+    website: str | None = None,
+    address: str | None = None,
+    city: str | None = None,
+    state: str | None = None,
+    postal_code: str | None = None,
+    country: str | None = None,
+    timezone: str | None = None,
+    logo_url: str | None = None,
+    replace_pairs: list[tuple[str, str]] | None = None,
+    custom_values_override: dict[str, str] | None = None,
+    include_workflow_steps: bool = False,
+    workflow_from_name: str | None = None,
+    workflow_from_email: str | None = None,
+    workflow_pixel_id: str | None = None,
+    workflow_capi_token: str | None = None,
+) -> dict[str, Any]:
+    """Build an agency-level sub-account rebrand plan via backend.leadconnectorhq.com across Business Profile, Custom Values, Trigger Links, Calendars, and optional internal Workflow Steps."""
+    cid = _require_company_id(backend, company_id)
+    lid = valid_id(location_id)
+    loc_res = backend.request("GET", f"/locations/{lid}")
+    before_loc = loc_res.get("location", loc_res)
+    if not isinstance(before_loc, dict):
+        before_loc = {}
+
+    clean_pairs = [(str(k).strip(), str(v).strip()) for k, v in (replace_pairs or []) if str(k).strip()]
+    cv_overrides = {str(k).strip().lower(): (str(k).strip(), str(v)) for k, v in (custom_values_override or {}).items() if str(k).strip()}
+
+    profile_updates: dict[str, Any] = {}
+    explicit_profile = {
+        "name": name,
+        "email": email,
+        "phone": phone,
+        "website": website,
+        "address": address,
+        "city": city,
+        "state": state,
+        "postalCode": postal_code,
+        "country": country,
+        "timezone": timezone,
+        "logoUrl": logo_url,
+    }
+    for k, v in explicit_profile.items():
+        if v is not None and str(v).strip():
+            profile_updates[k] = str(v).strip()
+        elif clean_pairs and isinstance(before_loc.get(k), str) and before_loc.get(k):
+            replaced = _apply_backend_replacements(str(before_loc[k]), clean_pairs)
+            if replaced != before_loc.get(k):
+                profile_updates[k] = replaced
+
+    cvs_res = backend.request("GET", f"/locations/{lid}/customValues")
+    raw_cvs = cvs_res.get("customValues", []) if isinstance(cvs_res, dict) and isinstance(cvs_res.get("customValues"), list) else []
+    cv_mutations: list[dict[str, Any]] = []
+    matched_override_keys: set[str] = set()
+    for cv in raw_cvs:
+        if not isinstance(cv, dict):
+            continue
+        cv_id = str(cv.get("id") or "")
+        cv_name = str(cv.get("name") or "")
+        old_val = str(cv.get("value") or "")
+        low_name = cv_name.lower()
+        low_key = str(cv.get("fieldKey") or "").lower()
+        new_val = old_val
+        if low_name in cv_overrides:
+            new_val = cv_overrides[low_name][1]
+            matched_override_keys.add(low_name)
+        elif low_key in cv_overrides:
+            new_val = cv_overrides[low_key][1]
+            matched_override_keys.add(low_key)
+        elif clean_pairs and old_val:
+            new_val = _apply_backend_replacements(old_val, clean_pairs)
+        if new_val != old_val and cv_id:
+            cv_mutations.append(
+                {
+                    "action": "update",
+                    "id": cv_id,
+                    "name": cv_name,
+                    "before_value": old_val,
+                    "after_value": new_val,
+                    "request": {
+                        "method": "PUT",
+                        "path": f"/locations/{lid}/customValues/{cv_id}",
+                        "payload": {"name": cv_name, "value": new_val},
+                    },
+                }
+            )
+
+    for low_k, (orig_name, val) in cv_overrides.items():
+        if low_k not in matched_override_keys:
+            cv_mutations.append(
+                {
+                    "action": "create",
+                    "id": None,
+                    "name": orig_name,
+                    "before_value": None,
+                    "after_value": val,
+                    "request": {
+                        "method": "POST",
+                        "path": f"/locations/{lid}/customValues",
+                        "payload": {"name": orig_name, "value": val},
+                    },
+                }
+            )
+
+    link_mutations: list[dict[str, Any]] = []
+    if clean_pairs:
+        try:
+            links_res = backend.request("GET", "/links/", query={"locationId": lid})
+            raw_links = links_res.get("links", []) if isinstance(links_res, dict) and isinstance(links_res.get("links"), list) else []
+        except HighLevelError:
+            raw_links = []
+        for lk in raw_links:
+            if not isinstance(lk, dict):
+                continue
+            link_id = str(lk.get("id") or lk.get("_id") or "")
+            old_name = str(lk.get("name") or "")
+            old_url = str(lk.get("redirectTo") or "")
+            new_name = _apply_backend_replacements(old_name, clean_pairs)
+            new_url = _apply_backend_replacements(old_url, clean_pairs)
+            if (new_name != old_name or new_url != old_url) and link_id:
+                link_mutations.append(
+                    {
+                        "id": link_id,
+                        "before_name": old_name,
+                        "after_name": new_name,
+                        "before_redirect_to": old_url,
+                        "after_redirect_to": new_url,
+                        "request": {
+                            "method": "PUT",
+                            "path": f"/links/{link_id}",
+                            "payload": {"name": new_name, "redirectTo": new_url},
+                        },
+                    }
+                )
+
+    calendar_mutations: list[dict[str, Any]] = []
+    if clean_pairs:
+        cals_res = backend.request("GET", "/calendars/", query={"locationId": lid})
+        raw_cals = cals_res.get("calendars", []) if isinstance(cals_res, dict) and isinstance(cals_res.get("calendars"), list) else []
+        for cal in raw_cals:
+            if not isinstance(cal, dict):
+                continue
+            cal_id = str(cal.get("id") or "")
+            old_name = str(cal.get("name") or "")
+            new_name = _apply_backend_replacements(old_name, clean_pairs)
+            if new_name != old_name and cal_id:
+                calendar_mutations.append(
+                    {
+                        "id": cal_id,
+                        "before_name": old_name,
+                        "after_name": new_name,
+                        "request": {
+                            "method": "PUT",
+                            "path": f"/calendars/{cal_id}",
+                            "payload": {"name": new_name},
+                        },
+                    }
+                )
+
+    workflow_step_mutations: list[dict[str, Any]] = []
+    if include_workflow_steps or workflow_from_name or workflow_from_email or workflow_pixel_id or workflow_capi_token:
+        wf_step_plan = make_workflow_steps_rebrand_plan(
+            backend,
+            location_id=lid,
+            replace_pairs=clean_pairs,
+            from_name=workflow_from_name,
+            from_email=workflow_from_email,
+            pixel_id=workflow_pixel_id,
+            capi_access_token=workflow_capi_token,
+        )
+        workflow_step_mutations = wf_step_plan.get("workflow_mutations", [])
+
+    plan_core = {
+        "resource": "location_rebrand",
+        "action": "rebrand_location",
+        "company_id": cid,
+        "location_id": lid,
+        "replace_pairs": [{"from": k, "to": v} for k, v in clean_pairs],
+        "business_profile_update": (
+            {
+                "before": {k: before_loc.get(k) for k in profile_updates},
+                "after": profile_updates,
+                "request": {
+                    "method": "PUT",
+                    "path": f"/locations/{lid}",
+                    "payload": {"companyId": cid, **profile_updates},
+                },
+            }
+            if profile_updates
+            else None
+        ),
+        "custom_value_mutations": cv_mutations,
+        "trigger_link_mutations": link_mutations,
+        "calendar_mutations": calendar_mutations,
+        "workflow_step_mutations": workflow_step_mutations,
+        "summary": {
+            "profile_fields_changed": len(profile_updates),
+            "custom_values_changed": len(cv_mutations),
+            "trigger_links_changed": len(link_mutations),
+            "calendars_changed": len(calendar_mutations),
+            "workflows_changed": len(workflow_step_mutations),
+        },
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_location_rebrand_plan(
+    backend: BackendClient,
+    plan: dict[str, Any],
+    *,
+    confirm_plan: str,
+) -> dict[str, Any]:
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+
+    lid = valid_id(plan["location_id"])
+    prof_up = plan.get("business_profile_update")
+    if isinstance(prof_up, dict) and isinstance(prof_up.get("request"), dict):
+        req = prof_up["request"]
+        backend.request(req["method"], req["path"], body=req["payload"])
+
+    cv_results = []
+    for item in plan.get("custom_value_mutations", []):
+        req = item["request"]
+        backend.request(req["method"], req["path"], body=req["payload"])
+        cv_results.append({"name": item["name"], "action": item["action"], "after_value": item["after_value"]})
+
+    link_results = []
+    for item in plan.get("trigger_link_mutations", []):
+        req = item["request"]
+        backend.request(req["method"], req["path"], body=req["payload"])
+        link_results.append({"id": item["id"], "after_name": item["after_name"], "after_redirect_to": item["after_redirect_to"]})
+
+    cal_results = []
+    for item in plan.get("calendar_mutations", []):
+        req = item["request"]
+        backend.request(req["method"], req["path"], body=req["payload"])
+        cal_results.append({"id": item["id"], "after_name": item["after_name"]})
+
+    wf_results = []
+    for item in plan.get("workflow_step_mutations", []):
+        req = item["request"]
+        backend.request(req["method"], req["path"], body=req["payload"])
+        wf_results.append(
+            {
+                "workflow_id": item["workflow_id"],
+                "workflow_name": item["workflow_name"],
+                "changed_step_count": len(item.get("step_changes", [])),
+            }
+        )
+
+    after_res = backend.request("GET", f"/locations/{lid}")
+    after_loc = after_res.get("location", after_res) if isinstance(after_res, dict) else {}
+    return {
+        "mode": "applied",
+        "action": "rebrand_location",
+        "company_id": plan.get("company_id"),
+        "location_id": lid,
+        "location_name": after_loc.get("name"),
+        "custom_values_applied": cv_results,
+        "trigger_links_applied": link_results,
+        "calendars_applied": cal_results,
+        "workflows_applied": wf_results,
+        "verified": True,
+    }
+
+
+def _mask_secret_value(val: str | None) -> str | None:
+    if not val:
+        return None
+    s = str(val).strip()
+    if len(s) <= 10:
+        return "***"
+    return f"{s[:6]}...{s[-4:]}"
+
+
+def inspect_agency_workflows_xray(
+    backend: BackendClient,
+    *,
+    location_id: str,
+    workflow_id: str | None = None,
+    brand_terms: list[str] | None = None,
+) -> dict[str, Any]:
+    """Deep-inspect internal workflow action steps (email senders/subjects/preheaders, Meta CAPI pixels, webhooks, SMS/notification copy) via GET /workflow/:locationId/:workflowId."""
+    lid = valid_id(location_id)
+    clean_terms = [t.strip() for t in (brand_terms or []) if t and t.strip()]
+
+    if workflow_id and workflow_id.strip():
+        target_wids = [valid_id(workflow_id.strip())]
+        wf_list_meta = {target_wids[0]: {}}
+    else:
+        wf_summary = list_location_workflows_backend(backend, location_id=lid)
+        target_wids = [w["id"] for w in wf_summary["workflows"] if w.get("id")]
+        wf_list_meta = {w["id"]: w for w in wf_summary["workflows"] if w.get("id")}
+
+    workflows_xray: list[dict[str, Any]] = []
+    email_senders_set: set[tuple[str, str]] = set()
+    capi_pixels_set: set[str] = set()
+    webhook_urls_set: set[str] = set()
+    brand_matches: list[dict[str, Any]] = []
+    hardcoded_warnings: list[dict[str, Any]] = []
+    total_steps = 0
+
+    inspectable_fields = ("from_name", "from_email", "subject", "preHeader", "title", "body", "message", "url", "pixel_id", "event_name")
+
+    for wid in target_wids:
+        raw_wf = backend.request("GET", f"/workflow/{lid}/{wid}")
+        if not isinstance(raw_wf, dict):
+            continue
+        wf_name = str(raw_wf.get("name") or wf_list_meta.get(wid, {}).get("name") or "")
+        wf_status = str(raw_wf.get("status") or wf_list_meta.get(wid, {}).get("status") or "").lower()
+        wf_data = raw_wf.get("workflowData") if isinstance(raw_wf.get("workflowData"), dict) else {}
+        templates = wf_data.get("templates") if isinstance(wf_data.get("templates"), list) else []
+        triggers = wf_data.get("triggers") if isinstance(wf_data.get("triggers"), list) else []
+
+        if clean_terms:
+            name_hits = [t for t in clean_terms if t.lower() in wf_name.lower()]
+            if name_hits:
+                brand_matches.append(
+                    {
+                        "workflow_id": wid,
+                        "workflow_name": wf_name,
+                        "step_id": None,
+                        "step_name": None,
+                        "step_type": "workflow_header",
+                        "field": "name",
+                        "value": wf_name,
+                        "matched_terms": name_hits,
+                    }
+                )
+
+        steps_summary: list[dict[str, Any]] = []
+        for step in templates:
+            if not isinstance(step, dict):
+                continue
+            total_steps += 1
+            sid = str(step.get("id") or "")
+            sname = str(step.get("name") or "")
+            stype = str(step.get("type") or "")
+            attrs = step.get("attributes") if isinstance(step.get("attributes"), dict) else {}
+
+            extracted_attrs: dict[str, Any] = {}
+            for k in ("from_name", "from_email", "subject", "preHeader", "template_id", "title", "url", "method", "pixel_id", "event_name", "value", "currency"):
+                if attrs.get(k) not in (None, ""):
+                    extracted_attrs[k] = attrs.get(k)
+            if attrs.get("body") not in (None, ""):
+                body_str = str(attrs.get("body"))
+                extracted_attrs["body_preview"] = body_str[:160] + ("..." if len(body_str) > 160 else "")
+            if attrs.get("access_token") not in (None, ""):
+                extracted_attrs["has_access_token"] = True
+                extracted_attrs["access_token_masked"] = _mask_secret_value(str(attrs.get("access_token")))
+
+            fn = str(attrs.get("from_name") or "").strip()
+            fe = str(attrs.get("from_email") or "").strip()
+            if fn or fe:
+                email_senders_set.add((fn, fe))
+            if fn and "{{" not in fn:
+                hardcoded_warnings.append(
+                    {
+                        "workflow_id": wid,
+                        "workflow_name": wf_name,
+                        "step_id": sid,
+                        "step_name": sname,
+                        "step_type": stype,
+                        "field": "from_name",
+                        "current_value": fn,
+                        "recommended_merge_tag": "{{location.name}}",
+                    }
+                )
+            if fe and "{{" not in fe:
+                hardcoded_warnings.append(
+                    {
+                        "workflow_id": wid,
+                        "workflow_name": wf_name,
+                        "step_id": sid,
+                        "step_name": sname,
+                        "step_type": stype,
+                        "field": "from_email",
+                        "current_value": fe,
+                        "recommended_merge_tag": "{{location.email}}",
+                    }
+                )
+            if attrs.get("pixel_id"):
+                pix_str = str(attrs["pixel_id"]).strip()
+                capi_pixels_set.add(pix_str)
+                if "{{" not in pix_str:
+                    hardcoded_warnings.append(
+                        {
+                            "workflow_id": wid,
+                            "workflow_name": wf_name,
+                            "step_id": sid,
+                            "step_name": sname,
+                            "step_type": stype,
+                            "field": "pixel_id",
+                            "current_value": pix_str,
+                            "recommended_merge_tag": "{{custom_values.meta_pixel_id}}",
+                        }
+                    )
+            if attrs.get("url"):
+                url_str = str(attrs["url"]).strip()
+                webhook_urls_set.add(url_str)
+                if "{{" not in url_str:
+                    hardcoded_warnings.append(
+                        {
+                            "workflow_id": wid,
+                            "workflow_name": wf_name,
+                            "step_id": sid,
+                            "step_name": sname,
+                            "step_type": stype,
+                            "field": "url",
+                            "current_value": url_str,
+                            "recommended_merge_tag": "{{custom_values.webhook_url}}",
+                        }
+                    )
+
+            if clean_terms:
+                for fname in inspectable_fields:
+                    fval = attrs.get(fname)
+                    if isinstance(fval, str) and fval.strip():
+                        hits = [t for t in clean_terms if t.lower() in fval.lower()]
+                        if hits:
+                            brand_matches.append(
+                                {
+                                    "workflow_id": wid,
+                                    "workflow_name": wf_name,
+                                    "step_id": sid,
+                                    "step_name": sname,
+                                    "step_type": stype,
+                                    "field": fname,
+                                    "value": fval[:200],
+                                    "matched_terms": hits,
+                                }
+                            )
+
+            steps_summary.append(
+                {
+                    "id": sid,
+                    "name": sname,
+                    "type": stype,
+                    "attributes": extracted_attrs,
+                }
+            )
+
+        workflows_xray.append(
+            {
+                "id": wid,
+                "name": wf_name,
+                "status": wf_status,
+                "version": raw_wf.get("version"),
+                "trigger_count": len(triggers),
+                "step_count": len(steps_summary),
+                "triggers": [
+                    {
+                        "id": str(tr.get("id") or ""),
+                        "name": str(tr.get("name") or ""),
+                        "type": str(tr.get("type") or ""),
+                    }
+                    for tr in triggers
+                    if isinstance(tr, dict)
+                ],
+                "steps": steps_summary,
+            }
+        )
+
+    return {
+        "location_id": lid,
+        "workflow_count": len(workflows_xray),
+        "total_step_count": total_steps,
+        "snapshot_portable": len(hardcoded_warnings) == 0,
+        "hardcoded_step_warning_count": len(hardcoded_warnings),
+        "hardcoded_step_warnings": hardcoded_warnings,
+        "email_senders": [{"from_name": fn, "from_email": fe} for fn, fe in sorted(email_senders_set)],
+        "capi_pixel_ids": sorted(capi_pixels_set),
+        "webhook_urls": sorted(webhook_urls_set),
+        "brand_terms_checked": clean_terms,
+        "brand_match_count": len(brand_matches),
+        "brand_matches": brand_matches,
+        "workflows": workflows_xray,
+        "token_source": backend.token_source,
+    }
+
+
+def make_workflow_steps_rebrand_plan(
+    backend: BackendClient,
+    *,
+    location_id: str,
+    workflow_ids: list[str] | None = None,
+    replace_pairs: list[tuple[str, str]] | None = None,
+    from_name: str | None = None,
+    from_email: str | None = None,
+    pixel_id: str | None = None,
+    capi_access_token: str | None = None,
+    templatize_senders: bool = False,
+) -> dict[str, Any]:
+    """Build a preview plan to bulk-update internal workflow steps (email from_name/from_email/subject/preHeader, notification copy, webhook URLs, Meta CAPI pixel_id/access_token) via PUT /workflow/:locationId/:workflowId."""
+    lid = valid_id(location_id)
+    clean_pairs = [(str(k).strip(), str(v).strip()) for k, v in (replace_pairs or []) if str(k).strip()]
+    clean_from_name = (
+        "{{location.name}}"
+        if templatize_senders and not (from_name and from_name.strip())
+        else (from_name.strip() if from_name and from_name.strip() else None)
+    )
+    clean_from_email = (
+        "{{location.email}}"
+        if templatize_senders and not (from_email and from_email.strip())
+        else (from_email.strip() if from_email and from_email.strip() else None)
+    )
+    clean_pixel_id = pixel_id.strip() if pixel_id and pixel_id.strip() else None
+    clean_capi_token = capi_access_token.strip() if capi_access_token and capi_access_token.strip() else None
+
+    if not any([clean_pairs, clean_from_name, clean_from_email, clean_pixel_id, clean_capi_token]):
+        raise HighLevelError(
+            "Provide at least one workflow step update (--replace OLD=NEW, --from-name, --from-email, --pixel-id, or --capi-access-token)."
+        )
+
+    if workflow_ids:
+        target_wids = [valid_id(w.strip()) for w in workflow_ids if w and w.strip()]
+    else:
+        wf_summary = list_location_workflows_backend(backend, location_id=lid)
+        target_wids = [w["id"] for w in wf_summary["workflows"] if w.get("id")]
+
+    workflow_mutations: list[dict[str, Any]] = []
+    replaceable_fields = ("from_name", "from_email", "subject", "preHeader", "title", "body", "message", "url")
+
+    for wid in target_wids:
+        raw_wf = backend.request("GET", f"/workflow/{lid}/{wid}")
+        if not isinstance(raw_wf, dict):
+            continue
+        wf_copy = json.loads(json.dumps(raw_wf))
+        wf_name = str(wf_copy.get("name") or "")
+        wf_data = wf_copy.get("workflowData")
+        if not isinstance(wf_data, dict):
+            continue
+        templates = wf_data.get("templates")
+        if not isinstance(templates, list):
+            continue
+
+        step_changes: list[dict[str, Any]] = []
+        for step in templates:
+            if not isinstance(step, dict):
+                continue
+            sid = str(step.get("id") or "")
+            sname = str(step.get("name") or "")
+            stype = str(step.get("type") or "")
+            attrs = step.get("attributes")
+            if not isinstance(attrs, dict):
+                continue
+
+            if clean_from_name is not None and (stype == "email" or "from_name" in attrs):
+                old_v = str(attrs.get("from_name") or "")
+                if old_v != clean_from_name:
+                    attrs["from_name"] = clean_from_name
+                    step_changes.append(
+                        {
+                            "step_id": sid,
+                            "step_name": sname,
+                            "step_type": stype,
+                            "field": "from_name",
+                            "before": old_v,
+                            "after": clean_from_name,
+                        }
+                    )
+
+            if clean_from_email is not None and (stype == "email" or "from_email" in attrs):
+                old_v = str(attrs.get("from_email") or "")
+                if old_v != clean_from_email:
+                    attrs["from_email"] = clean_from_email
+                    step_changes.append(
+                        {
+                            "step_id": sid,
+                            "step_name": sname,
+                            "step_type": stype,
+                            "field": "from_email",
+                            "before": old_v,
+                            "after": clean_from_email,
+                        }
+                    )
+
+            if clean_pixel_id is not None and stype == "facebook_conversion_api":
+                old_v = str(attrs.get("pixel_id") or "")
+                if old_v != clean_pixel_id:
+                    attrs["pixel_id"] = clean_pixel_id
+                    step_changes.append(
+                        {
+                            "step_id": sid,
+                            "step_name": sname,
+                            "step_type": stype,
+                            "field": "pixel_id",
+                            "before": old_v,
+                            "after": clean_pixel_id,
+                        }
+                    )
+
+            if clean_capi_token is not None and stype == "facebook_conversion_api":
+                old_v = str(attrs.get("access_token") or "")
+                if old_v != clean_capi_token:
+                    attrs["access_token"] = clean_capi_token
+                    step_changes.append(
+                        {
+                            "step_id": sid,
+                            "step_name": sname,
+                            "step_type": stype,
+                            "field": "access_token",
+                            "before": _mask_secret_value(old_v),
+                            "after": _mask_secret_value(clean_capi_token),
+                        }
+                    )
+
+            if clean_pairs:
+                for fname in replaceable_fields:
+                    if fname == "from_name" and clean_from_name is not None:
+                        continue
+                    if fname == "from_email" and clean_from_email is not None:
+                        continue
+                    old_val = attrs.get(fname)
+                    if isinstance(old_val, str) and old_val:
+                        new_val = _apply_backend_replacements(old_val, clean_pairs)
+                        if new_val != old_val:
+                            attrs[fname] = new_val
+                            step_changes.append(
+                                {
+                                    "step_id": sid,
+                                    "step_name": sname,
+                                    "step_type": stype,
+                                    "field": fname,
+                                    "before": old_val[:160],
+                                    "after": new_val[:160],
+                                }
+                            )
+
+        if step_changes:
+            put_payload = {
+                "name": wf_copy.get("name"),
+                "status": wf_copy.get("status"),
+                "workflowData": wf_copy.get("workflowData"),
+                "settings": wf_copy.get("settings"),
+                "updatedBy": backend.worker_user_id or wf_copy.get("updatedBy"),
+            }
+            workflow_mutations.append(
+                {
+                    "workflow_id": wid,
+                    "workflow_name": wf_name,
+                    "step_changes": step_changes,
+                    "request": {
+                        "method": "PUT",
+                        "path": f"/workflow/{lid}/{wid}",
+                        "payload": put_payload,
+                    },
+                }
+            )
+
+    plan_core = {
+        "resource": "workflow_steps_rebrand",
+        "action": "rebrand_workflow_steps",
+        "location_id": lid,
+        "workflows_inspected": len(target_wids),
+        "workflows_to_update": len(workflow_mutations),
+        "total_step_changes": sum(len(m["step_changes"]) for m in workflow_mutations),
+        "workflow_mutations": workflow_mutations,
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_workflow_steps_rebrand_plan(
+    backend: BackendClient,
+    plan: dict[str, Any],
+    *,
+    confirm_plan: str,
+) -> dict[str, Any]:
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+
+    lid = valid_id(plan["location_id"])
+    applied_workflows = []
+    for item in plan.get("workflow_mutations", []):
+        req = item["request"]
+        res = backend.request(req["method"], req["path"], body=req["payload"])
+        applied_workflows.append(
+            {
+                "workflow_id": item["workflow_id"],
+                "workflow_name": item["workflow_name"],
+                "step_change_count": len(item.get("step_changes", [])),
+                "after_version": res.get("version") if isinstance(res, dict) else None,
+            }
+        )
+
+    return {
+        "mode": "applied",
+        "action": "rebrand_workflow_steps",
+        "location_id": lid,
+        "workflows_updated": len(applied_workflows),
+        "results": applied_workflows,
+        "verified": True,
+    }
+
+
+def make_snapshot_share_link_plan(
+    backend: BackendClient,
+    *,
+    snapshot_id: str,
+    share_type: str = "link",
+    company_id: str | None = None,
+    relationship_number: str | None = None,
+    share_location_id: str | None = None,
+) -> dict[str, Any]:
+    """Build a preview plan to generate a shareable snapshot link via POST /snapshots/share/v2/link."""
+    sid = valid_id(snapshot_id)
+    cid = _require_company_id(backend, company_id)
+    clean_share_type = (share_type or "link").strip().lower()
+    if clean_share_type not in {"link", "permanent_link", "agency_restricted", "location_restricted"}:
+        raise HighLevelError(
+            "Snapshot --share-type must be 'link', 'permanent_link', 'agency_restricted', or 'location_restricted'."
+        )
+    payload: dict[str, Any] = {
+        "snapshot_id": sid,
+        "share_type": clean_share_type,
+        "company_id": cid,
+    }
+    if relationship_number and relationship_number.strip():
+        payload["relationship_number"] = relationship_number.strip()
+    if share_location_id and share_location_id.strip():
+        payload["share_location_id"] = valid_id(share_location_id.strip())
+
+    plan_core = {
+        "resource": "agency_snapshot_share_link",
+        "action": "create_share_link",
+        "company_id": cid,
+        "snapshot_id": sid,
+        "share_type": clean_share_type,
+        "proposed_request": {
+            "method": "POST",
+            "path": "/snapshots/share/v2/link",
+            "query": {"companyId": cid},
+            "payload": payload,
+        },
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_snapshot_share_link_plan(
+    backend: BackendClient,
+    plan: dict[str, Any],
+    *,
+    confirm_plan: str,
+) -> dict[str, Any]:
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+    req = plan["proposed_request"]
+    res = backend.request(req["method"], req["path"], body=req["payload"], query=req["query"])
+    return {
+        "mode": "applied",
+        "action": "create_share_link",
+        "company_id": plan["company_id"],
+        "snapshot_id": plan["snapshot_id"],
+        "share_type": plan["share_type"],
+        "share_link": res.get("shareLink") or res.get("link") if isinstance(res, dict) else None,
+        "verified": True,
+        "response": res,
+    }
+

@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 import urllib.error
@@ -273,6 +275,52 @@ class FakeClient:
             return {"builders": [{"id": "em_01", "name": "Welcome OldBrand Email", "templateType": "builder"}], "total": 1}
         if method == "GET" and path == "/links/":
             return {"links": [{"id": "lnk_01", "name": "OldBrand CTA", "redirectTo": "https://oldbrand.example.com/start"}]}
+        if method == "POST" and path == "/links/":
+            return {"link": {"id": "lnk_02", **(body or {})}}
+        if method == "PUT" and path.startswith("/links/"):
+            return {"link": {"id": path.rsplit("/", 1)[-1], **(body or {})}}
+        if method == "DELETE" and path.startswith("/links/"):
+            return {"succeeded": True}
+        if method == "PUT" and path == f"/locations/{self.location_id}":
+            return {"location": {"id": self.location_id, **(body or {})}}
+        if method == "POST" and path == f"/locations/{self.location_id}/customFields":
+            return {"customField": {"id": "cf_new_01", **(body or {})}}
+        if method == "PUT" and path.startswith(f"/locations/{self.location_id}/customFields/"):
+            return {"customField": {"id": path.rsplit("/", 1)[-1], **(body or {})}}
+        if method == "DELETE" and path.startswith(f"/locations/{self.location_id}/customFields/"):
+            return {"succeeded": True}
+        if method == "GET" and path == "/calendars/cal_12345678":
+            return {"calendar": {"id": "cal_12345678", "name": "Booking", "slug": "booking", "isActive": True}}
+        if method == "PUT" and path.startswith("/calendars/"):
+            return {"calendar": {"id": path.rsplit("/", 1)[-1], **(body or {})}}
+        if method == "GET" and path.startswith("/conversations/") and path.endswith("/messages"):
+            return {"messages": {"messages": [{"id": "msg_01", "type": "SMS", "direction": "inbound", "body": "Hi there"}]}}
+        if method == "POST" and path == "/conversations/messages":
+            return {"messageId": "msg_out_01", **(body or {})}
+        if method == "GET" and path == "/users/":
+            return {"users": [{"id": "usr_sub_01", "name": "Jane Subuser", "email": "jane@example.com", "roles": {"type": "account", "role": "admin"}}]}
+        if method == "GET" and path == "/contacts/cnt_12345678/notes":
+            return {"notes": [{"id": "note_01", "body": "Initial call note", "dateAdded": "2026-11-01T00:00:00Z"}]}
+        if method == "GET" and path == "/contacts/cnt_12345678/tasks":
+            return {"tasks": [{"id": "tsk_01", "title": "Follow up", "completed": False, "dueDate": "2026-12-31T17:00:00Z"}]}
+        if method == "POST" and path == "/contacts/cnt_12345678/tasks":
+            return {"task": {"id": "tsk_new_01", **(body or {})}}
+        if method == "PUT" and path.startswith("/contacts/cnt_12345678/tasks/"):
+            return {"task": {"id": path.rsplit("/", 1)[-1], **(body or {})}}
+        if method == "GET" and path == "/calendars/events":
+            return {"events": [{"id": "ev_01", "title": "Strategy Call", "calendarId": "cal_12345678", "contactId": "cnt_12345678", "appointmentStatus": "confirmed"}]}
+        if method == "POST" and path == "/calendars/events/appointments":
+            return {"id": "appt_new_01", **(body or {})}
+        if method == "GET" and path == "/medias/files":
+            return {"files": [{"id": "med_01", "name": "logo.png", "url": "https://cdn.example.com/logo.png", "type": "file"}]}
+        if method == "GET" and path == "/products/":
+            return {"products": [{"_id": "prd_01", "name": "Starter Plan", "productType": "SERVICE"}]}
+        if method == "GET" and path == "/invoices/":
+            return {"invoices": [{"_id": "inv_01", "name": "Invoice #101", "status": "paid", "total": 500}], "total": 1}
+        if method == "GET" and path == "/payments/transactions":
+            return {"data": [{"_id": "tx_01", "amount": 500, "currency": "EUR", "status": "succeeded"}], "totalCount": 1}
+        if method == "GET" and path == "/blogs/site/all":
+            return {"data": [{"_id": "blg_01", "name": "Main Blog", "domain": "blog.example.com"}]}
         return {}
 
 
@@ -397,7 +445,7 @@ class FakeBackendClient:
         if method == "GET" and path.startswith("/locations/"):
             lid = path.rsplit("/", 1)[-1]
             return {"location": dict(self.locations.get(lid, {"id": lid, "_id": lid, "name": f"Loc {lid}", "companyId": self.company_id, "permissions": dict(UNNERFED_LOCATION_PERMISSIONS)}))}
-        if method == "PUT" and path.startswith("/locations/"):
+        if method == "PUT" and path.startswith("/locations/") and "/customValues" not in path:
             assert body is not None
             lid = path.rsplit("/", 1)[-1]
             if "name" in body:
@@ -587,6 +635,109 @@ class FakeBackendClient:
             return {"builders": [{"id": "em_01", "name": "OldBrand Welcome"}], "total": 1}
         if method == "GET" and path == "/links/":
             return {"links": [{"id": "lnk_01", "name": "OldBrand Link", "redirectTo": "https://oldbrand.example.com"}]}
+        if method == "PUT" and path.startswith("/links/"):
+            return {"link": {"id": path.rsplit("/", 1)[-1], **(body or {})}}
+        if method == "PUT" and path.startswith("/calendars/"):
+            return {"calendar": {"id": path.rsplit("/", 1)[-1], **(body or {})}}
+        if method == "PUT" and path.startswith("/locations/") and "/customValues/" in path:
+            return {"customValue": {"id": path.rsplit("/", 1)[-1], **(body or {})}}
+        if method == "POST" and path.startswith("/locations/") and path.endswith("/customValues"):
+            return {"customValue": {"id": "cv_new_01", **(body or {})}}
+        if method == "GET" and path == "/oauth/static/scopes":
+            return {"scopes": list(CRITICAL_ACCOUNT_ADMIN_V2_SCOPES) + ["wallet.readonly"]}
+        if method == "POST" and path.startswith("/marketplace/private-integration/location/"):
+            return {
+                "_id": "pit_created_99",
+                "name": (body or {}).get("name", "Agent PIT"),
+                "activeToken": "pit-us-test-1234-5678-abcdef123456",
+                "scopes": (body or {}).get("scopes", []),
+            }
+        if method == "DELETE" and "/marketplace/private-integration/location/" in path and "/integration/" in path:
+            return {"success": True}
+        if method == "POST" and path == "/locations/":
+            assert body is not None
+            new_id = f"loc_cloned_{len(self.locations) + 1:04d}"
+            new_loc = {
+                "id": new_id,
+                "_id": new_id,
+                "name": body["name"],
+                "country": body.get("country", "NL"),
+                "timezone": body.get("timezone", "Europe/Amsterdam"),
+                "companyId": self.company_id,
+                "settings": {
+                    "saasSettings": {
+                        "saasMode": "setup_pending",
+                        "stripeCustomerId": "cus_clone_1",
+                        "twilioRebilling": {"enabled": False, "markup": 5},
+                        "mailgunRebilling": {"enabled": False, "markup": 5},
+                    }
+                },
+                "reseller": {"active": True},
+                "permissions": dict(UNNERFED_LOCATION_PERMISSIONS),
+            }
+            self.locations[new_id] = new_loc
+            self.location_metadata[new_id] = {
+                "locationId": new_id,
+                "companyId": self.company_id,
+                "saasMode": "setup_pending",
+                "stripeCustomerId": "cus_clone_1",
+                "attachedRebillingConfig": {
+                    "Phone": {"enabled": True, "markup": 5},
+                    "Email": {"enabled": True, "markup": 5},
+                },
+                "twilioRebilling": {"enabled": False, "markup": 5},
+                "mailgunRebilling": {"enabled": False, "markup": 5},
+            }
+            self.saas_billing_v2[new_id] = {
+                k: {"enabled": True, "optIn": True, "markup": 5}
+                for k in SAAS_BILLING_V2_KEYS
+            }
+            self.workflows_by_loc[new_id] = [
+                {"id": "wf_clone_01", "name": "Cloned Workflow", "status": "published", "version": 1}
+            ]
+            self.smtp_blocked[new_id] = False
+            return {"location": new_loc}
+        if method == "GET" and path.startswith("/workflow/") and path.count("/") == 3:
+            _, _, lid, wid = path.split("/")
+            return {
+                "_id": wid,
+                "name": "OldBrand Meta CAPI Lead",
+                "status": "draft",
+                "version": 1,
+                "locationId": lid,
+                "workflowData": {
+                    "triggers": [{"id": "trg_01", "name": "Form Submitted", "type": "form_submission"}],
+                    "templates": [
+                        {
+                            "id": "stp_email_01",
+                            "name": "Welcome Email",
+                            "type": "email",
+                            "attributes": {
+                                "from_name": "Mike van OldBrand",
+                                "from_email": "info@mail.oldbrand.nl",
+                                "subject": "Welcome to OldBrand",
+                                "preHeader": "Personal note from OldBrand",
+                            },
+                        },
+                        {
+                            "id": "stp_capi_01",
+                            "name": "Meta CAPI Lead",
+                            "type": "facebook_conversion_api",
+                            "attributes": {
+                                "pixel_id": "2339635620171477",
+                                "access_token": "EAAQplTDtestsecret1234567890",
+                                "event_name": "Lead",
+                            },
+                        },
+                    ],
+                },
+                "settings": {},
+            }
+        if method == "PUT" and path.startswith("/workflow/") and path.count("/") == 3 and not path.endswith("/change-status"):
+            _, _, lid, wid = path.split("/")
+            return {"_id": wid, "locationId": lid, "version": 2, **(body or {})}
+        if method == "POST" and path == "/snapshots/share/v2/link":
+            return {"shareLink": "https://affiliates.gohighlevel.com/?fp_ref=test&share=snap_master_01"}
         raise HighLevelError(f"Unhandled mock backend route: {method} {path}")
 
 
@@ -1099,6 +1250,394 @@ class CrmAndMutationTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         payload = json.loads(buf.getvalue())
         self.assertEqual(payload["ui_multiplier"], 1.05)
+
+    def test_v034_subaccount_and_agency_superpowers(self) -> None:
+        fake = FakeClient()
+        bclient = FakeBackendClient()
+
+        # 1. Subaccount profile set / use / delete in temp config file
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_file = Path(tmpdir) / "config.json"
+            with patch.dict(os.environ, {"GHL_CONFIG_FILE": str(cfg_file)}, clear=False):
+                res_set = execute(
+                    parser().parse_args([
+                        "subaccount-profile-set",
+                        "--profile-name", "klant-a",
+                        "--location-id", "loc_klant_a_1234",
+                        "--pit", "pit-us-valid-token-999999",
+                        "--name", "Klant A",
+                        "--set-default",
+                    ])
+                )
+                self.assertEqual(res_set["profile"], "klant-a")
+                self.assertEqual(res_set["default_profile"], "klant-a")
+
+                res_del = execute(
+                    parser().parse_args(["subaccount-profile-delete", "--profile-name", "klant-a"])
+                )
+                self.assertEqual(res_del["deleted_profile"], "klant-a")
+
+        # 2. Subaccount update & atomic subaccount-rebrand via GHL_PIT
+        su_prev = execute(
+            parser().parse_args(["subaccount-update", "--name", "New Client Co", "--website", "https://newclient.nl"]),
+            client_factory=lambda: fake,
+        )
+        self.assertEqual(su_prev["mode"], "preview")
+        su_app = execute(
+            parser().parse_args([
+                "subaccount-update",
+                "--name", "New Client Co",
+                "--website", "https://newclient.nl",
+                "--apply",
+                "--confirm-location", fake.location_id,
+                "--confirm-plan", su_prev["plan"]["sha256"],
+            ]),
+            client_factory=lambda: fake,
+        )
+        self.assertTrue(su_app["verified"])
+
+        sr_prev = execute(
+            parser().parse_args([
+                "subaccount-rebrand",
+                "--name", "NewBrand NL",
+                "--replace-from", "oldbrand,example.com",
+                "--replace-to", "newbrand,newbrand.nl",
+                "--custom-values-json", '{"Support Email": "info@newbrand.nl"}',
+            ]),
+            client_factory=lambda: fake,
+        )
+        self.assertEqual(sr_prev["mode"], "preview")
+        self.assertGreaterEqual(sr_prev["plan"]["summary"]["trigger_links_changed"], 1)
+        sr_app = execute(
+            parser().parse_args([
+                "subaccount-rebrand",
+                "--name", "NewBrand NL",
+                "--replace-from", "oldbrand,example.com",
+                "--replace-to", "newbrand,newbrand.nl",
+                "--custom-values-json", '{"Support Email": "info@newbrand.nl"}',
+                "--apply",
+                "--confirm-location", fake.location_id,
+                "--confirm-plan", sr_prev["plan"]["sha256"],
+            ]),
+            client_factory=lambda: fake,
+        )
+        self.assertTrue(sr_app["verified"])
+
+        # 3. Custom field, trigger link, calendar update, conversation messages & send
+        cf_prev = execute(
+            parser().parse_args(["custom-field-upsert", "--name", "VAT Number", "--data-type", "TEXT"]),
+            client_factory=lambda: fake,
+        )
+        cf_app = execute(
+            parser().parse_args([
+                "custom-field-upsert",
+                "--name", "VAT Number",
+                "--data-type", "TEXT",
+                "--apply",
+                "--confirm-location", fake.location_id,
+                "--confirm-plan", cf_prev["plan"]["sha256"],
+            ]),
+            client_factory=lambda: fake,
+        )
+        self.assertTrue(cf_app["verified"])
+
+        tl_prev = execute(
+            parser().parse_args(["trigger-link-upsert", "--name", "Intake Link", "--redirect-to", "https://newbrand.nl/intake"]),
+            client_factory=lambda: fake,
+        )
+        tl_app = execute(
+            parser().parse_args([
+                "trigger-link-upsert",
+                "--name", "Intake Link",
+                "--redirect-to", "https://newbrand.nl/intake",
+                "--apply",
+                "--confirm-location", fake.location_id,
+                "--confirm-plan", tl_prev["plan"]["sha256"],
+            ]),
+            client_factory=lambda: fake,
+        )
+        self.assertTrue(tl_app["verified"])
+
+        cal_prev = execute(
+            parser().parse_args(["calendar-update", "--calendar-id", "cal_12345678", "--name", "Strategy Call", "--active"]),
+            client_factory=lambda: fake,
+        )
+        cal_app = execute(
+            parser().parse_args([
+                "calendar-update",
+                "--calendar-id", "cal_12345678",
+                "--name", "Strategy Call",
+                "--active",
+                "--apply",
+                "--confirm-location", fake.location_id,
+                "--confirm-plan", cal_prev["plan"]["sha256"],
+            ]),
+            client_factory=lambda: fake,
+        )
+        self.assertTrue(cal_app["verified"])
+
+        msgs = execute(
+            parser().parse_args(["conversation-messages", "--conversation-id", "conv_12345678"]),
+            client_factory=lambda: fake,
+        )
+        self.assertEqual(msgs["count"], 1)
+
+        cs_prev = execute(
+            parser().parse_args(["conversation-send", "--contact-id", "cnt_12345678", "--type", "SMS", "--message", "Hello!"]),
+            client_factory=lambda: fake,
+        )
+        cs_app = execute(
+            parser().parse_args([
+                "conversation-send",
+                "--contact-id", "cnt_12345678",
+                "--type", "SMS",
+                "--message", "Hello!",
+                "--apply",
+                "--confirm-location", fake.location_id,
+                "--confirm-plan", cs_prev["plan"]["sha256"],
+            ]),
+            client_factory=lambda: fake,
+        )
+        self.assertTrue(cs_app["verified"])
+
+        # 4. Agency PIT create & delete, location-rebrand, and 1-command location-batch-clone
+        pit_prev = execute(
+            parser().parse_args(["pit-create", "--location-id", "loc_alpha_1234", "--name", "Agent PIT"]),
+            backend_factory=lambda company_id=None: bclient,
+        )
+        pit_app = execute(
+            parser().parse_args([
+                "pit-create",
+                "--location-id", "loc_alpha_1234",
+                "--name", "Agent PIT",
+                "--apply",
+                "--confirm-plan", pit_prev["plan"]["sha256"],
+            ]),
+            backend_factory=lambda company_id=None: bclient,
+        )
+        self.assertTrue(pit_app["verified"])
+
+        pdel_prev = execute(
+            parser().parse_args(["pit-delete", "--location-id", "loc_alpha_1234", "--integration-id", "pit_01____"]),
+            backend_factory=lambda company_id=None: bclient,
+        )
+        pdel_app = execute(
+            parser().parse_args([
+                "pit-delete",
+                "--location-id", "loc_alpha_1234",
+                "--integration-id", "pit_01____",
+                "--apply",
+                "--confirm-plan", pdel_prev["plan"]["sha256"],
+            ]),
+            backend_factory=lambda company_id=None: bclient,
+        )
+        self.assertTrue(pdel_app["verified"])
+
+        lreb_prev = execute(
+            parser().parse_args([
+                "location-rebrand",
+                "--location-id", "loc_alpha_1234",
+                "--name", "Alpha Rebranded",
+                "--replace-from", "oldbrand",
+                "--replace-to", "alphabrand",
+            ]),
+            backend_factory=lambda company_id=None: bclient,
+        )
+        lreb_app = execute(
+            parser().parse_args([
+                "location-rebrand",
+                "--location-id", "loc_alpha_1234",
+                "--name", "Alpha Rebranded",
+                "--replace-from", "oldbrand",
+                "--replace-to", "alphabrand",
+                "--apply",
+                "--confirm-plan", lreb_prev["plan"]["sha256"],
+            ]),
+            backend_factory=lambda company_id=None: bclient,
+        )
+        self.assertTrue(lreb_app["verified"])
+
+        bclone_prev = execute(
+            parser().parse_args([
+                "location-batch-clone",
+                "--source-location-id", "loc_alpha_1234",
+                "--snapshot-id", "snap_master_01",
+                "--names", "Clone A,Clone B",
+                "--assign-email", "member@example.com",
+                "--create-pits",
+            ]),
+            backend_factory=lambda company_id=None: bclient,
+        )
+        self.assertEqual(bclone_prev["plan"]["target_count"], 2)
+        bclone_app = execute(
+            parser().parse_args([
+                "location-batch-clone",
+                "--source-location-id", "loc_alpha_1234",
+                "--snapshot-id", "snap_master_01",
+                "--names", "Clone A,Clone B",
+                "--assign-email", "member@example.com",
+                "--create-pits",
+                "--apply",
+                "--confirm-plan", bclone_prev["plan"]["sha256"],
+            ]),
+            backend_factory=lambda company_id=None: bclient,
+        )
+        self.assertTrue(bclone_app["verified"])
+        self.assertEqual(len(bclone_app["created_locations"]), 2)
+        self.assertEqual(len(bclone_app["created_pits"]), 2)
+
+        # 5. Agency workflow X-Ray, workflow-steps-rebrand, and snapshot-share-link
+        xray_res = execute(
+            parser().parse_args([
+                "agency-workflow-xray",
+                "--location-id", "loc_alpha_1234",
+                "--brand-terms", "oldbrand,2339635620171477",
+            ]),
+            backend_factory=lambda company_id=None: bclient,
+        )
+        self.assertEqual(xray_res["workflow_count"], 2)
+        self.assertGreaterEqual(xray_res["brand_match_count"], 4)
+        self.assertEqual(xray_res["capi_pixel_ids"], ["2339635620171477"])
+
+        wfs_prev = execute(
+            parser().parse_args([
+                "workflow-steps-rebrand",
+                "--location-id", "loc_alpha_1234",
+                "--replace-from", "OldBrand,oldbrand.nl",
+                "--replace-to", "NewBrand,newbrand.nl",
+                "--pixel-id", "999888777666",
+            ]),
+            backend_factory=lambda company_id=None: bclient,
+        )
+        self.assertEqual(wfs_prev["mode"], "preview")
+        self.assertEqual(wfs_prev["plan"]["workflows_to_update"], 2)
+        wfs_app = execute(
+            parser().parse_args([
+                "workflow-steps-rebrand",
+                "--location-id", "loc_alpha_1234",
+                "--replace-from", "OldBrand,oldbrand.nl",
+                "--replace-to", "NewBrand,newbrand.nl",
+                "--pixel-id", "999888777666",
+                "--apply",
+                "--confirm-plan", wfs_prev["plan"]["sha256"],
+            ]),
+            backend_factory=lambda company_id=None: bclient,
+        )
+        self.assertTrue(wfs_app["verified"])
+        self.assertEqual(wfs_app["workflows_updated"], 2)
+
+        sh_prev = execute(
+            parser().parse_args([
+                "snapshot-share-link",
+                "--snapshot-id", "snap_master_01",
+                "--share-type", "permanent_link",
+            ]),
+            backend_factory=lambda company_id=None: bclient,
+        )
+        sh_app = execute(
+            parser().parse_args([
+                "snapshot-share-link",
+                "--snapshot-id", "snap_master_01",
+                "--share-type", "permanent_link",
+                "--apply",
+                "--confirm-plan", sh_prev["plan"]["sha256"],
+            ]),
+            backend_factory=lambda company_id=None: bclient,
+        )
+        self.assertTrue(sh_app["verified"])
+        self.assertIn("share=snap_master_01", sh_app["share_link"])
+
+        # 6. Second-wave sub-account commands (users, notes, tasks, calendar-events, appointment, medias, products, invoices, transactions, blogs)
+        u_sub = execute(parser().parse_args(["subaccount-users"]), client_factory=lambda: fake)
+        self.assertEqual(u_sub["count"], 1)
+
+        c_notes = execute(parser().parse_args(["contact-notes", "--contact-id", "cnt_12345678"]), client_factory=lambda: fake)
+        self.assertEqual(c_notes["count"], 1)
+
+        c_tasks = execute(parser().parse_args(["contact-tasks", "--contact-id", "cnt_12345678"]), client_factory=lambda: fake)
+        self.assertEqual(c_tasks["count"], 1)
+
+        ctk_prev = execute(
+            parser().parse_args(["contact-task-upsert", "--contact-id", "cnt_12345678", "--title", "Send proposal"]),
+            client_factory=lambda: fake,
+        )
+        ctk_app = execute(
+            parser().parse_args([
+                "contact-task-upsert",
+                "--contact-id", "cnt_12345678",
+                "--title", "Send proposal",
+                "--apply",
+                "--confirm-location", fake.location_id,
+                "--confirm-plan", ctk_prev["plan"]["sha256"],
+            ]),
+            client_factory=lambda: fake,
+        )
+        self.assertTrue(ctk_app["verified"])
+
+        cal_evs = execute(parser().parse_args(["calendar-events"]), client_factory=lambda: fake)
+        self.assertEqual(cal_evs["count"], 1)
+
+        ap_prev = execute(
+            parser().parse_args([
+                "appointment-create",
+                "--calendar-id", "cal_12345678",
+                "--contact-id", "cnt_12345678",
+                "--start-time", "2026-12-01T14:00:00Z",
+                "--title", "Intake Call",
+            ]),
+            client_factory=lambda: fake,
+        )
+        ap_app = execute(
+            parser().parse_args([
+                "appointment-create",
+                "--calendar-id", "cal_12345678",
+                "--contact-id", "cnt_12345678",
+                "--start-time", "2026-12-01T14:00:00Z",
+                "--title", "Intake Call",
+                "--apply",
+                "--confirm-location", fake.location_id,
+                "--confirm-plan", ap_prev["plan"]["sha256"],
+            ]),
+            client_factory=lambda: fake,
+        )
+        self.assertTrue(ap_app["verified"])
+
+        self.assertEqual(execute(parser().parse_args(["medias"]), client_factory=lambda: fake)["count"], 1)
+        self.assertEqual(execute(parser().parse_args(["products"]), client_factory=lambda: fake)["count"], 1)
+        self.assertEqual(execute(parser().parse_args(["invoices"]), client_factory=lambda: fake)["count"], 1)
+        self.assertEqual(execute(parser().parse_args(["transactions"]), client_factory=lambda: fake)["count"], 1)
+        self.assertEqual(execute(parser().parse_args(["blogs"]), client_factory=lambda: fake)["count"], 1)
+
+    def test_client_write_allowlist_and_secret_scrubbing(self) -> None:
+        from legends_gohighlevel.api import scrub_secrets
+
+        client = Client(token="pit-1234567890abcdef", location_id="loc_12345678")
+        allowed_writes = [
+            "/locations/loc_12345678",
+            "/locations/loc_12345678/customFields",
+            "/locations/loc_12345678/customFields/cf_12345678",
+            "/locations/loc_12345678/customValues",
+            "/locations/loc_12345678/tags",
+            "/links/",
+            "/links/lnk_12345678",
+            "/calendars/cal_12345678",
+            "/calendars/events/appointments",
+            "/conversations/messages",
+            "/contacts/cnt_12345678/tasks",
+        ]
+        for wp in allowed_writes:
+            self.assertTrue(client._allowed_path(wp), f"Expected _allowed_path True for {wp}")
+            self.assertTrue(client._allowed_write_path(wp), f"Expected _allowed_write_path True for {wp}")
+
+        self.assertFalse(client._allowed_write_path("/users/"))
+        self.assertFalse(client._allowed_write_path("/products/"))
+
+        raw_err = "Failed with pit-abcdef1234567890 and Bearer secret_token_xyz123 and eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlMTIzNDU="
+        scrubbed = scrub_secrets(raw_err)
+        self.assertNotIn("pit-abcdef1234567890", scrubbed)
+        self.assertNotIn("secret_token_xyz123", scrubbed)
+        self.assertNotIn("eyJhbGciOiJIUzI1NiJ9", scrubbed)
+        self.assertIn("[REDACTED]", scrubbed)
 
 
 if __name__ == "__main__":

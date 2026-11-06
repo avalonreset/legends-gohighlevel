@@ -2,7 +2,7 @@
   "schema": "legends.knowledge-pack/v1",
   "id": "gohighlevel",
   "module": "legends-gohighlevel",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "entrypoint": "index.md",
   "files": [
     {
@@ -15,7 +15,7 @@
     },
     {
       "path": "crm-operations.md",
-      "sha256": "df2f31e76c3688471bca846b992a65bda02306d49c4a0e0cb39cd0851e00291f"
+      "sha256": "7aa30753870119f80c9f8c5264cf679025316f9f99be6f464f0dfe95fb5ca606"
     },
     {
       "path": "email-and-deliverability.md",
@@ -27,7 +27,7 @@
     },
     {
       "path": "internal-backend-and-dashboards.md",
-      "sha256": "b5abbc4977b5790df4443b46ed413aff63087c24d5afa6679f25b862592cdaa8"
+      "sha256": "c1eb7ca5743f31828daa925f91e81ca6104d085b90df0df71b565048faefa5a6"
     },
     {
       "path": "sources.md",

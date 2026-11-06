@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import time
 from typing import Any
 
 from .api import API_VERSION_V3, Client, HighLevelError, load_subaccount_config, valid_id, valid_object_key
@@ -54,7 +56,23 @@ def location_snapshot(client: Client) -> dict[str, Any]:
     raw = res.get("location", res)
     if not isinstance(raw, dict):
         raise HighLevelError("Invalid location response.")
-    keep = ("id", "name", "companyId", "timezone", "country", "state", "city", "postalCode", "website", "settings")
+    keep = (
+        "id",
+        "name",
+        "companyId",
+        "email",
+        "phone",
+        "address",
+        "timezone",
+        "country",
+        "state",
+        "city",
+        "postalCode",
+        "website",
+        "logoUrl",
+        "domain",
+        "settings",
+    )
     return {
         "location": {k: raw[k] for k in keep if k in raw},
         "rate_limits": client.last_rate_limits,
@@ -1525,3 +1543,1141 @@ def inspect_profiles_matrix(
         "profile_count": len(rows),
         "profiles": rows,
     }
+
+
+def make_subaccount_update_plan(
+    client: Client,
+    *,
+    name: str | None = None,
+    email: str | None = None,
+    phone: str | None = None,
+    website: str | None = None,
+    address: str | None = None,
+    city: str | None = None,
+    state: str | None = None,
+    postal_code: str | None = None,
+    country: str | None = None,
+    timezone: str | None = None,
+    logo_url: str | None = None,
+) -> dict[str, Any]:
+    loc = client.location_id
+    before = location_snapshot(client)["location"]
+    updates: dict[str, Any] = {}
+    field_map = {
+        "name": name,
+        "email": email,
+        "phone": phone,
+        "website": website,
+        "address": address,
+        "city": city,
+        "state": state,
+        "postalCode": postal_code,
+        "country": country,
+        "timezone": timezone,
+        "logoUrl": logo_url,
+    }
+    for key, val in field_map.items():
+        if val is not None and str(val).strip():
+            updates[key] = str(val).strip()
+    if not updates:
+        raise HighLevelError("Provide at least one sub-account profile field to update.")
+    plan_core = {
+        "resource": "subaccount_profile",
+        "action": "update",
+        "location_id": loc,
+        "before": {k: before.get(k) for k in updates},
+        "proposed_request": {
+            "method": "PUT",
+            "path": f"/locations/{loc}",
+            "payload": updates,
+        },
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_subaccount_update_plan(
+    client: Client,
+    plan: dict[str, Any],
+    *,
+    confirm_location: str,
+    confirm_plan: str,
+) -> dict[str, Any]:
+    if confirm_location != client.location_id:
+        raise HighLevelError("--confirm-location must equal GHL_LOCATION_ID.")
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+    req = plan["proposed_request"]
+    res = client.request(req["method"], req["path"], body=req["payload"])
+    after = location_snapshot(client)["location"]
+    return {
+        "mode": "applied",
+        "action": "update",
+        "location_id": client.location_id,
+        "before": plan.get("before"),
+        "after": {k: after.get(k) for k in req["payload"]},
+        "verified": True,
+        "response": res,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def make_custom_field_plan(
+    client: Client,
+    *,
+    action: str,
+    name: str,
+    data_type: str = "TEXT",
+    model: str = "contact",
+    placeholder: str | None = None,
+    options: list[str] | None = None,
+    custom_field_id: str | None = None,
+) -> dict[str, Any]:
+    loc = client.location_id
+    clean_name = (name or "").strip()
+    if not clean_name:
+        raise HighLevelError("Custom field name is required.")
+    existing = list_custom_fields(client)["custom_fields"]
+    matched = None
+    if custom_field_id:
+        fid = valid_id(custom_field_id)
+        matched = next((f for f in existing if f["id"] == fid), None)
+    else:
+        matched = next((f for f in existing if f["name"].lower() == clean_name.lower()), None)
+
+    if action == "delete":
+        target_id = valid_id(custom_field_id or (matched["id"] if matched else None))
+        plan_core = {
+            "resource": "custom_field",
+            "action": "delete",
+            "location_id": loc,
+            "custom_field_id": target_id,
+            "before": matched,
+            "proposed_request": {
+                "method": "DELETE",
+                "path": f"/locations/{loc}/customFields/{target_id}",
+                "payload": None,
+            },
+        }
+        return {**plan_core, "sha256": plan_digest(plan_core)}
+
+    payload: dict[str, Any] = {
+        "name": clean_name,
+        "dataType": (data_type or "TEXT").strip().upper(),
+        "model": (model or "contact").strip(),
+    }
+    if placeholder is not None:
+        payload["placeholder"] = placeholder
+    if options:
+        payload["options"] = [str(o).strip() for o in options if str(o).strip()]
+
+    if matched:
+        fid = valid_id(matched["id"])
+        req = {
+            "method": "PUT",
+            "path": f"/locations/{loc}/customFields/{fid}",
+            "payload": payload,
+        }
+        resolved_action = "update"
+    else:
+        req = {
+            "method": "POST",
+            "path": f"/locations/{loc}/customFields",
+            "payload": payload,
+        }
+        resolved_action = "create"
+
+    plan_core = {
+        "resource": "custom_field",
+        "action": resolved_action,
+        "location_id": loc,
+        "before": matched,
+        "proposed_request": req,
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_custom_field_plan(
+    client: Client,
+    plan: dict[str, Any],
+    *,
+    confirm_location: str,
+    confirm_plan: str,
+) -> dict[str, Any]:
+    if confirm_location != client.location_id:
+        raise HighLevelError("--confirm-location must equal GHL_LOCATION_ID.")
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+    req = plan["proposed_request"]
+    res = client.request(req["method"], req["path"], body=req["payload"])
+    return {
+        "mode": "applied",
+        "action": plan["action"],
+        "location_id": client.location_id,
+        "verified": True,
+        "response": res,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def make_trigger_link_plan(
+    client: Client,
+    *,
+    action: str,
+    name: str,
+    redirect_to: str | None = None,
+    link_id: str | None = None,
+) -> dict[str, Any]:
+    loc = client.location_id
+    clean_name = (name or "").strip()
+    existing = list_trigger_links(client)["links"]
+    matched = None
+    if link_id:
+        lid = valid_id(link_id)
+        matched = next((lk for lk in existing if lk["id"] == lid), None)
+    elif clean_name:
+        matched = next((lk for lk in existing if lk["name"].lower() == clean_name.lower()), None)
+
+    if action == "delete":
+        target_id = valid_id(link_id or (matched["id"] if matched else None))
+        plan_core = {
+            "resource": "trigger_link",
+            "action": "delete",
+            "location_id": loc,
+            "link_id": target_id,
+            "before": matched,
+            "proposed_request": {
+                "method": "DELETE",
+                "path": f"/links/{target_id}",
+                "payload": None,
+            },
+        }
+        return {**plan_core, "sha256": plan_digest(plan_core)}
+
+    if not clean_name or not (redirect_to and redirect_to.strip()):
+        raise HighLevelError("Trigger link --name and --redirect-to are required.")
+    url = redirect_to.strip()
+    if matched:
+        target_id = valid_id(matched["id"])
+        req = {
+            "method": "PUT",
+            "path": f"/links/{target_id}",
+            "payload": {"name": clean_name, "redirectTo": url},
+        }
+        resolved_action = "update"
+    else:
+        req = {
+            "method": "POST",
+            "path": "/links/",
+            "payload": {"locationId": loc, "name": clean_name, "redirectTo": url},
+        }
+        resolved_action = "create"
+    plan_core = {
+        "resource": "trigger_link",
+        "action": resolved_action,
+        "location_id": loc,
+        "before": matched,
+        "proposed_request": req,
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_trigger_link_plan(
+    client: Client,
+    plan: dict[str, Any],
+    *,
+    confirm_location: str,
+    confirm_plan: str,
+) -> dict[str, Any]:
+    if confirm_location != client.location_id:
+        raise HighLevelError("--confirm-location must equal GHL_LOCATION_ID.")
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+    req = plan["proposed_request"]
+    res = client.request(req["method"], req["path"], body=req["payload"])
+    return {
+        "mode": "applied",
+        "action": plan["action"],
+        "location_id": client.location_id,
+        "verified": True,
+        "response": res,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def make_calendar_update_plan(
+    client: Client,
+    *,
+    calendar_id: str,
+    name: str | None = None,
+    slug: str | None = None,
+    description: str | None = None,
+    is_active: bool | None = None,
+) -> dict[str, Any]:
+    loc = client.location_id
+    cid = valid_id(calendar_id)
+    cal_res = client.request("GET", f"/calendars/{cid}")
+    cal = cal_res.get("calendar", cal_res)
+    if not isinstance(cal, dict):
+        cal = {}
+    updates: dict[str, Any] = {}
+    if name is not None and name.strip():
+        updates["name"] = name.strip()
+    if slug is not None and slug.strip():
+        updates["slug"] = slug.strip()
+    if description is not None:
+        updates["description"] = description
+    if is_active is not None:
+        updates["isActive"] = bool(is_active)
+    if not updates:
+        raise HighLevelError("Provide at least one calendar field to update (--name, --slug, --description, or --active/--inactive).")
+    plan_core = {
+        "resource": "calendar",
+        "action": "update",
+        "location_id": loc,
+        "calendar_id": cid,
+        "before": {
+            "name": cal.get("name"),
+            "slug": cal.get("slug"),
+            "description": cal.get("description"),
+            "isActive": cal.get("isActive"),
+        },
+        "proposed_request": {
+            "method": "PUT",
+            "path": f"/calendars/{cid}",
+            "payload": updates,
+        },
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_calendar_update_plan(
+    client: Client,
+    plan: dict[str, Any],
+    *,
+    confirm_location: str,
+    confirm_plan: str,
+) -> dict[str, Any]:
+    if confirm_location != client.location_id:
+        raise HighLevelError("--confirm-location must equal GHL_LOCATION_ID.")
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+    req = plan["proposed_request"]
+    res = client.request(req["method"], req["path"], body=req["payload"])
+    return {
+        "mode": "applied",
+        "action": "update",
+        "location_id": client.location_id,
+        "calendar_id": plan["calendar_id"],
+        "verified": True,
+        "response": res,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def list_conversation_messages(
+    client: Client,
+    *,
+    conversation_id: str,
+    limit: int = 20,
+) -> dict[str, Any]:
+    cid = valid_id(conversation_id)
+    res = client.request(
+        "GET",
+        f"/conversations/{cid}/messages",
+        query={"limit": max(1, min(int(limit), 100))},
+    )
+    raw_msgs = res.get("messages")
+    if isinstance(raw_msgs, dict) and isinstance(raw_msgs.get("messages"), list):
+        raw_list = raw_msgs["messages"]
+    elif isinstance(raw_msgs, list):
+        raw_list = raw_msgs
+    else:
+        raw_list = []
+    messages = [
+        {
+            "id": str(m.get("id") or ""),
+            "type": m.get("type") or m.get("messageType"),
+            "direction": m.get("direction"),
+            "status": m.get("status"),
+            "body": m.get("body"),
+            "subject": m.get("subject"),
+            "dateAdded": m.get("dateAdded"),
+        }
+        for m in raw_list
+        if isinstance(m, dict)
+    ]
+    return {
+        "location_id": client.location_id,
+        "conversation_id": cid,
+        "count": len(messages),
+        "messages": messages,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def make_conversation_send_plan(
+    client: Client,
+    *,
+    contact_id: str,
+    message_type: str = "SMS",
+    message: str | None = None,
+    subject: str | None = None,
+    html: str | None = None,
+) -> dict[str, Any]:
+    loc = client.location_id
+    cid = valid_id(contact_id)
+    mtype = (message_type or "SMS").strip()
+    if mtype not in {"SMS", "Email", "WhatsApp", "Live_Chat", "IG", "FB"}:
+        raise HighLevelError("Unsupported message --type; choose SMS, Email, WhatsApp, Live_Chat, IG, or FB.")
+    payload: dict[str, Any] = {
+        "type": mtype,
+        "contactId": cid,
+    }
+    if message is not None and message.strip():
+        payload["message"] = message.strip()
+    if subject is not None and subject.strip():
+        payload["subject"] = subject.strip()
+    if html is not None and html.strip():
+        payload["html"] = html.strip()
+    if "message" not in payload and "html" not in payload:
+        raise HighLevelError("Provide --message or --html to send a conversation message.")
+    plan_core = {
+        "resource": "conversation_message",
+        "action": "send",
+        "location_id": loc,
+        "contact_id": cid,
+        "proposed_request": {
+            "method": "POST",
+            "path": "/conversations/messages",
+            "payload": payload,
+        },
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_conversation_send_plan(
+    client: Client,
+    plan: dict[str, Any],
+    *,
+    confirm_location: str,
+    confirm_plan: str,
+) -> dict[str, Any]:
+    if confirm_location != client.location_id:
+        raise HighLevelError("--confirm-location must equal GHL_LOCATION_ID.")
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+    req = plan["proposed_request"]
+    res = client.request(req["method"], req["path"], body=req["payload"])
+    return {
+        "mode": "applied",
+        "action": "send",
+        "location_id": client.location_id,
+        "contact_id": plan["contact_id"],
+        "verified": True,
+        "response": res,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def _apply_replacements(text: str, replacements: list[tuple[str, str]]) -> str:
+    out = text
+    for old_val, new_val in replacements:
+        if not old_val:
+            continue
+        pattern = re.compile(re.escape(old_val), re.IGNORECASE)
+        out = pattern.sub(new_val, out)
+    return out
+
+
+def make_subaccount_rebrand_plan(
+    client: Client,
+    *,
+    name: str | None = None,
+    email: str | None = None,
+    phone: str | None = None,
+    website: str | None = None,
+    address: str | None = None,
+    city: str | None = None,
+    state: str | None = None,
+    postal_code: str | None = None,
+    country: str | None = None,
+    timezone: str | None = None,
+    logo_url: str | None = None,
+    replace_pairs: list[tuple[str, str]] | None = None,
+    custom_values_override: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Build an atomic sub-account rebranding plan across Business Profile, Custom Values, Trigger Links, and Calendars."""
+    loc = client.location_id
+    before_loc = location_snapshot(client)["location"]
+    clean_pairs = [(str(k).strip(), str(v).strip()) for k, v in (replace_pairs or []) if str(k).strip()]
+    cv_overrides = {str(k).strip().lower(): (str(k).strip(), str(v)) for k, v in (custom_values_override or {}).items() if str(k).strip()}
+
+    profile_updates: dict[str, Any] = {}
+    explicit_profile = {
+        "name": name,
+        "email": email,
+        "phone": phone,
+        "website": website,
+        "address": address,
+        "city": city,
+        "state": state,
+        "postalCode": postal_code,
+        "country": country,
+        "timezone": timezone,
+        "logoUrl": logo_url,
+    }
+    for k, v in explicit_profile.items():
+        if v is not None and str(v).strip():
+            profile_updates[k] = str(v).strip()
+        elif clean_pairs and isinstance(before_loc.get(k), str) and before_loc.get(k):
+            replaced = _apply_replacements(str(before_loc[k]), clean_pairs)
+            if replaced != before_loc[k]:
+                profile_updates[k] = replaced
+
+    existing_cvs = list_custom_values(client)["custom_values"]
+    cv_mutations: list[dict[str, Any]] = []
+    matched_override_keys: set[str] = set()
+    for cv in existing_cvs:
+        cv_id = cv["id"]
+        cv_name = cv["name"]
+        old_val = str(cv.get("value") or "")
+        low_name = cv_name.lower()
+        low_key = str(cv.get("fieldKey") or "").lower()
+        new_val = old_val
+        if low_name in cv_overrides:
+            new_val = cv_overrides[low_name][1]
+            matched_override_keys.add(low_name)
+        elif low_key in cv_overrides:
+            new_val = cv_overrides[low_key][1]
+            matched_override_keys.add(low_key)
+        elif clean_pairs and old_val:
+            new_val = _apply_replacements(old_val, clean_pairs)
+        if new_val != old_val:
+            cv_mutations.append(
+                {
+                    "action": "update",
+                    "id": cv_id,
+                    "name": cv_name,
+                    "before_value": old_val,
+                    "after_value": new_val,
+                    "request": {
+                        "method": "PUT",
+                        "path": f"/locations/{loc}/customValues/{cv_id}",
+                        "payload": {"name": cv_name, "value": new_val},
+                    },
+                }
+            )
+
+    for low_k, (orig_name, val) in cv_overrides.items():
+        if low_k not in matched_override_keys:
+            cv_mutations.append(
+                {
+                    "action": "create",
+                    "id": None,
+                    "name": orig_name,
+                    "before_value": None,
+                    "after_value": val,
+                    "request": {
+                        "method": "POST",
+                        "path": f"/locations/{loc}/customValues",
+                        "payload": {"name": orig_name, "value": val},
+                    },
+                }
+            )
+
+    link_mutations: list[dict[str, Any]] = []
+    if clean_pairs:
+        try:
+            existing_links = list_trigger_links(client)["links"]
+        except HighLevelError:
+            existing_links = []
+        for lk in existing_links:
+            lid = lk["id"]
+            old_name = str(lk.get("name") or "")
+            old_url = str(lk.get("redirectTo") or "")
+            new_name = _apply_replacements(old_name, clean_pairs)
+            new_url = _apply_replacements(old_url, clean_pairs)
+            if new_name != old_name or new_url != old_url:
+                link_mutations.append(
+                    {
+                        "id": lid,
+                        "before_name": old_name,
+                        "after_name": new_name,
+                        "before_redirect_to": old_url,
+                        "after_redirect_to": new_url,
+                        "request": {
+                            "method": "PUT",
+                            "path": f"/links/{lid}",
+                            "payload": {"name": new_name, "redirectTo": new_url},
+                        },
+                    }
+                )
+
+    calendar_mutations: list[dict[str, Any]] = []
+    if clean_pairs:
+        existing_cals = list_calendars(client)["calendars"]
+        for cal in existing_cals:
+            cid = cal["id"]
+            old_name = str(cal.get("name") or "")
+            new_name = _apply_replacements(old_name, clean_pairs)
+            if new_name != old_name:
+                calendar_mutations.append(
+                    {
+                        "id": cid,
+                        "before_name": old_name,
+                        "after_name": new_name,
+                        "request": {
+                            "method": "PUT",
+                            "path": f"/calendars/{cid}",
+                            "payload": {"name": new_name},
+                        },
+                    }
+                )
+
+    plan_core = {
+        "resource": "subaccount_rebrand",
+        "action": "rebrand",
+        "location_id": loc,
+        "replace_pairs": [{"from": k, "to": v} for k, v in clean_pairs],
+        "business_profile_update": (
+            {
+                "before": {k: before_loc.get(k) for k in profile_updates},
+                "after": profile_updates,
+                "request": {
+                    "method": "PUT",
+                    "path": f"/locations/{loc}",
+                    "payload": profile_updates,
+                },
+            }
+            if profile_updates
+            else None
+        ),
+        "custom_value_mutations": cv_mutations,
+        "trigger_link_mutations": link_mutations,
+        "calendar_mutations": calendar_mutations,
+        "summary": {
+            "profile_fields_changed": len(profile_updates),
+            "custom_values_changed": len(cv_mutations),
+            "trigger_links_changed": len(link_mutations),
+            "calendars_changed": len(calendar_mutations),
+        },
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_subaccount_rebrand_plan(
+    client: Client,
+    plan: dict[str, Any],
+    *,
+    confirm_location: str,
+    confirm_plan: str,
+) -> dict[str, Any]:
+    if confirm_location != client.location_id:
+        raise HighLevelError("--confirm-location must equal GHL_LOCATION_ID.")
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+
+    prof_up = plan.get("business_profile_update")
+    if isinstance(prof_up, dict) and isinstance(prof_up.get("request"), dict):
+        req = prof_up["request"]
+        client.request(req["method"], req["path"], body=req["payload"])
+
+    cv_results = []
+    for item in plan.get("custom_value_mutations", []):
+        req = item["request"]
+        client.request(req["method"], req["path"], body=req["payload"])
+        cv_results.append({"name": item["name"], "action": item["action"], "after_value": item["after_value"]})
+
+    link_results = []
+    for item in plan.get("trigger_link_mutations", []):
+        req = item["request"]
+        client.request(req["method"], req["path"], body=req["payload"])
+        link_results.append({"id": item["id"], "after_name": item["after_name"], "after_redirect_to": item["after_redirect_to"]})
+
+    cal_results = []
+    for item in plan.get("calendar_mutations", []):
+        req = item["request"]
+        client.request(req["method"], req["path"], body=req["payload"])
+        cal_results.append({"id": item["id"], "after_name": item["after_name"]})
+
+    after_loc = location_snapshot(client)["location"]
+    return {
+        "mode": "applied",
+        "action": "rebrand",
+        "location_id": client.location_id,
+        "business_profile": after_loc,
+        "custom_values_applied": cv_results,
+        "trigger_links_applied": link_results,
+        "calendars_applied": cal_results,
+        "verified": True,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def list_subaccount_users(client: Client) -> dict[str, Any]:
+    """List users assigned to the sub-account via Official API v2 GET /users/?locationId=:locationId."""
+    loc = client.location_id
+    res = client.request("GET", "/users/", query={"locationId": loc})
+    raw_users = res.get("users", []) if isinstance(res, dict) and isinstance(res.get("users"), list) else []
+    users = [
+        {
+            "id": str(u.get("id") or ""),
+            "name": u.get("name") or f"{u.get('firstName', '')} {u.get('lastName', '')}".strip(),
+            "firstName": u.get("firstName"),
+            "lastName": u.get("lastName"),
+            "email": u.get("email"),
+            "phone": u.get("phone"),
+            "type": (u.get("roles") or {}).get("type") if isinstance(u.get("roles"), dict) else u.get("type"),
+            "role": (u.get("roles") or {}).get("role") if isinstance(u.get("roles"), dict) else u.get("role"),
+            "deleted": bool(u.get("deleted", False)),
+        }
+        for u in raw_users
+        if isinstance(u, dict)
+    ]
+    return {
+        "location_id": loc,
+        "count": len(users),
+        "users": users,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def list_contact_notes(client: Client, *, contact_id: str) -> dict[str, Any]:
+    """List notes on a contact via GET /contacts/:contactId/notes."""
+    cid = valid_id(contact_id)
+    res = client.request("GET", f"/contacts/{cid}/notes")
+    raw_notes = res.get("notes", []) if isinstance(res, dict) and isinstance(res.get("notes"), list) else []
+    notes = [
+        {
+            "id": str(n.get("id") or ""),
+            "body": n.get("body") or n.get("bodyText"),
+            "userId": n.get("userId"),
+            "dateAdded": n.get("dateAdded"),
+        }
+        for n in raw_notes
+        if isinstance(n, dict)
+    ]
+    return {
+        "location_id": client.location_id,
+        "contact_id": cid,
+        "count": len(notes),
+        "notes": notes,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def list_contact_tasks(client: Client, *, contact_id: str) -> dict[str, Any]:
+    """List tasks on a contact via GET /contacts/:contactId/tasks."""
+    cid = valid_id(contact_id)
+    res = client.request("GET", f"/contacts/{cid}/tasks")
+    raw_tasks = res.get("tasks", []) if isinstance(res, dict) and isinstance(res.get("tasks"), list) else []
+    tasks = [
+        {
+            "id": str(t.get("id") or ""),
+            "title": t.get("title"),
+            "body": t.get("body"),
+            "dueDate": t.get("dueDate"),
+            "completed": bool(t.get("completed", False)),
+            "assignedTo": t.get("assignedTo"),
+        }
+        for t in raw_tasks
+        if isinstance(t, dict)
+    ]
+    return {
+        "location_id": client.location_id,
+        "contact_id": cid,
+        "count": len(tasks),
+        "tasks": tasks,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def make_contact_task_plan(
+    client: Client,
+    *,
+    contact_id: str,
+    title: str,
+    body: str | None = None,
+    due_date: str | None = None,
+    completed: bool = False,
+    assigned_to: str | None = None,
+    task_id: str | None = None,
+) -> dict[str, Any]:
+    loc = client.location_id
+    cid = valid_id(contact_id)
+    clean_title = (title or "").strip()
+    if not clean_title:
+        raise HighLevelError("Task --title is required.")
+    payload: dict[str, Any] = {
+        "title": clean_title,
+        "completed": bool(completed),
+    }
+    if body is not None:
+        payload["body"] = body
+    if due_date is not None and due_date.strip():
+        payload["dueDate"] = due_date.strip()
+    else:
+        payload["dueDate"] = "2026-12-31T17:00:00Z"
+    if assigned_to is not None and assigned_to.strip():
+        payload["assignedTo"] = valid_id(assigned_to.strip())
+
+    if task_id and task_id.strip():
+        tid = valid_id(task_id.strip())
+        action = "update"
+        req = {
+            "method": "PUT",
+            "path": f"/contacts/{cid}/tasks/{tid}",
+            "payload": payload,
+        }
+    else:
+        action = "create"
+        req = {
+            "method": "POST",
+            "path": f"/contacts/{cid}/tasks",
+            "payload": payload,
+        }
+
+    plan_core = {
+        "resource": "contact_task",
+        "action": action,
+        "location_id": loc,
+        "contact_id": cid,
+        "proposed_request": req,
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_contact_task_plan(
+    client: Client,
+    plan: dict[str, Any],
+    *,
+    confirm_location: str,
+    confirm_plan: str,
+) -> dict[str, Any]:
+    if confirm_location != client.location_id:
+        raise HighLevelError("--confirm-location must equal GHL_LOCATION_ID.")
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+    req = plan["proposed_request"]
+    res = client.request(req["method"], req["path"], body=req["payload"])
+    return {
+        "mode": "applied",
+        "action": plan["action"],
+        "location_id": client.location_id,
+        "contact_id": plan["contact_id"],
+        "verified": True,
+        "response": res,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def list_calendar_events(
+    client: Client,
+    *,
+    calendar_id: str | None = None,
+    user_id: str | None = None,
+    group_id: str | None = None,
+    start_time: str | int | None = None,
+    end_time: str | int | None = None,
+) -> dict[str, Any]:
+    """List calendar events/appointments via GET /calendars/events."""
+    loc = client.location_id
+    cal_id = valid_id(calendar_id) if calendar_id and calendar_id.strip() else None
+    uid = valid_id(user_id) if user_id and user_id.strip() else None
+    gid = valid_id(group_id) if group_id and group_id.strip() else None
+
+    if not any([cal_id, uid, gid]):
+        cals = list_calendars(client)["calendars"]
+        if not cals:
+            return {
+                "location_id": loc,
+                "calendar_id": None,
+                "count": 0,
+                "events": [],
+                "rate_limits": client.last_rate_limits,
+            }
+        cal_id = cals[0]["id"]
+
+    now_ms = int(time.time() * 1000)
+    s_ms = str(start_time) if start_time is not None else str(now_ms - 30 * 86400 * 1000)
+    e_ms = str(end_time) if end_time is not None else str(now_ms + 60 * 86400 * 1000)
+
+    query: dict[str, Any] = {
+        "locationId": loc,
+        "startTime": s_ms,
+        "endTime": e_ms,
+    }
+    if cal_id:
+        query["calendarId"] = cal_id
+    if uid:
+        query["userId"] = uid
+    if gid:
+        query["groupId"] = gid
+
+    res = client.request("GET", "/calendars/events", query=query)
+    raw_events = res.get("events", []) if isinstance(res, dict) and isinstance(res.get("events"), list) else []
+    events = [
+        {
+            "id": str(ev.get("id") or ""),
+            "title": ev.get("title"),
+            "calendarId": ev.get("calendarId"),
+            "contactId": ev.get("contactId"),
+            "appointmentStatus": ev.get("appointmentStatus") or ev.get("status"),
+            "startTime": ev.get("startTime"),
+            "endTime": ev.get("endTime"),
+            "assignedUserId": ev.get("assignedUserId"),
+        }
+        for ev in raw_events
+        if isinstance(ev, dict)
+    ]
+    return {
+        "location_id": loc,
+        "calendar_id": cal_id,
+        "count": len(events),
+        "events": events,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def make_appointment_create_plan(
+    client: Client,
+    *,
+    calendar_id: str,
+    contact_id: str,
+    start_time: str,
+    end_time: str | None = None,
+    title: str | None = None,
+    appointment_status: str = "confirmed",
+    assigned_user_id: str | None = None,
+    address: str | None = None,
+) -> dict[str, Any]:
+    loc = client.location_id
+    cal_id = valid_id(calendar_id)
+    cid = valid_id(contact_id)
+    if not start_time or not start_time.strip():
+        raise HighLevelError("Appointment --start-time (ISO-8601) is required.")
+    payload: dict[str, Any] = {
+        "calendarId": cal_id,
+        "locationId": loc,
+        "contactId": cid,
+        "startTime": start_time.strip(),
+        "appointmentStatus": (appointment_status or "confirmed").strip(),
+    }
+    if end_time and end_time.strip():
+        payload["endTime"] = end_time.strip()
+    if title and title.strip():
+        payload["title"] = title.strip()
+    if assigned_user_id and assigned_user_id.strip():
+        payload["assignedUserId"] = valid_id(assigned_user_id.strip())
+    if address and address.strip():
+        payload["address"] = address.strip()
+
+    plan_core = {
+        "resource": "calendar_appointment",
+        "action": "create",
+        "location_id": loc,
+        "calendar_id": cal_id,
+        "contact_id": cid,
+        "proposed_request": {
+            "method": "POST",
+            "path": "/calendars/events/appointments",
+            "payload": payload,
+        },
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_appointment_create_plan(
+    client: Client,
+    plan: dict[str, Any],
+    *,
+    confirm_location: str,
+    confirm_plan: str,
+) -> dict[str, Any]:
+    if confirm_location != client.location_id:
+        raise HighLevelError("--confirm-location must equal GHL_LOCATION_ID.")
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+    req = plan["proposed_request"]
+    res = client.request(req["method"], req["path"], body=req["payload"])
+    return {
+        "mode": "applied",
+        "action": "create",
+        "location_id": client.location_id,
+        "calendar_id": plan["calendar_id"],
+        "contact_id": plan["contact_id"],
+        "verified": True,
+        "response": res,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def list_media_files(
+    client: Client,
+    *,
+    limit: int = 50,
+    query_str: str | None = None,
+) -> dict[str, Any]:
+    """List files in the sub-account Media Library via GET /medias/files."""
+    loc = client.location_id
+    query: dict[str, Any] = {
+        "sortBy": "createdAt",
+        "sortOrder": "desc",
+        "type": "file",
+        "altType": "location",
+        "altId": loc,
+        "limit": str(max(1, min(int(limit), 100))),
+    }
+    if query_str and query_str.strip():
+        query["query"] = query_str.strip()
+    res = client.request("GET", "/medias/files", query=query)
+    raw_files = res.get("files", []) if isinstance(res, dict) and isinstance(res.get("files"), list) else []
+    files = [
+        {
+            "id": str(f.get("id") or f.get("_id") or ""),
+            "name": f.get("name"),
+            "url": f.get("url"),
+            "type": f.get("type"),
+            "createdAt": f.get("createdAt"),
+        }
+        for f in raw_files
+        if isinstance(f, dict)
+    ]
+    return {
+        "location_id": loc,
+        "count": len(files),
+        "files": files,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def list_products(client: Client, *, limit: int = 50) -> dict[str, Any]:
+    """List products in the sub-account via GET /products/."""
+    loc = client.location_id
+    res = client.request(
+        "GET",
+        "/products/",
+        query={"locationId": loc, "limit": str(max(1, min(int(limit), 100)))},
+    )
+    raw = res.get("products", []) if isinstance(res, dict) and isinstance(res.get("products"), list) else []
+    products = [
+        {
+            "id": str(p.get("_id") or p.get("id") or ""),
+            "name": p.get("name"),
+            "productType": p.get("productType"),
+            "availableInStore": p.get("availableInStore"),
+            "createdAt": p.get("createdAt"),
+        }
+        for p in raw
+        if isinstance(p, dict)
+    ]
+    return {
+        "location_id": loc,
+        "count": len(products),
+        "products": products,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def list_invoices(client: Client, *, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """List invoices in the sub-account via GET /invoices/."""
+    loc = client.location_id
+    res = client.request(
+        "GET",
+        "/invoices/",
+        query={
+            "altId": loc,
+            "altType": "location",
+            "limit": str(max(1, min(int(limit), 100))),
+            "offset": str(max(0, int(offset))),
+        },
+    )
+    raw = res.get("invoices", []) if isinstance(res, dict) and isinstance(res.get("invoices"), list) else []
+    invoices = [
+        {
+            "id": str(inv.get("_id") or inv.get("id") or ""),
+            "name": inv.get("name"),
+            "invoiceNumber": inv.get("invoiceNumber"),
+            "status": inv.get("status"),
+            "total": inv.get("total"),
+            "currency": inv.get("currency"),
+            "createdAt": inv.get("createdAt"),
+        }
+        for inv in raw
+        if isinstance(inv, dict)
+    ]
+    return {
+        "location_id": loc,
+        "count": len(invoices),
+        "total": res.get("total", len(invoices)) if isinstance(res, dict) else len(invoices),
+        "invoices": invoices,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def list_transactions(client: Client, *, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """List payment transactions in the sub-account via GET /payments/transactions."""
+    loc = client.location_id
+    res = client.request(
+        "GET",
+        "/payments/transactions",
+        query={
+            "altId": loc,
+            "altType": "location",
+            "limit": str(max(1, min(int(limit), 100))),
+            "offset": str(max(0, int(offset))),
+        },
+    )
+    raw = res.get("data", []) if isinstance(res, dict) and isinstance(res.get("data"), list) else []
+    transactions = [
+        {
+            "id": str(tx.get("_id") or tx.get("id") or ""),
+            "amount": tx.get("amount"),
+            "currency": tx.get("currency"),
+            "status": tx.get("status"),
+            "contactName": tx.get("contactName"),
+            "entitySourceType": tx.get("entitySourceType"),
+            "createdAt": tx.get("createdAt"),
+        }
+        for tx in raw
+        if isinstance(tx, dict)
+    ]
+    return {
+        "location_id": loc,
+        "count": len(transactions),
+        "total": res.get("totalCount", len(transactions)) if isinstance(res, dict) else len(transactions),
+        "transactions": transactions,
+        "rate_limits": client.last_rate_limits,
+    }
+
+
+def list_blogs(client: Client, *, limit: int = 20, skip: int = 0) -> dict[str, Any]:
+    """List blog sites in the sub-account via GET /blogs/site/all."""
+    loc = client.location_id
+    res = client.request(
+        "GET",
+        "/blogs/site/all",
+        query={
+            "locationId": loc,
+            "limit": str(max(1, min(int(limit), 100))),
+            "skip": str(max(0, int(skip))),
+        },
+    )
+    raw = res.get("data", []) if isinstance(res, dict) and isinstance(res.get("data"), list) else []
+    blogs = [
+        {
+            "id": str(b.get("_id") or b.get("id") or ""),
+            "name": b.get("name"),
+            "domain": b.get("domain"),
+            "slug": b.get("slug"),
+        }
+        for b in raw
+        if isinstance(b, dict)
+    ]
+    return {
+        "location_id": loc,
+        "count": len(blogs),
+        "blogs": blogs,
+        "rate_limits": client.last_rate_limits,
+    }
+

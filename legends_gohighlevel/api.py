@@ -27,18 +27,22 @@ CONTAINER_RE = re.compile(r"[A-Za-z0-9._-]{2,80}\Z")
 ALLOWED_PATHS = (
     re.compile(r"/locations/[A-Za-z0-9_-]{8,64}\Z"),
     re.compile(r"/locations/[A-Za-z0-9_-]{8,64}/customValues(?:/[A-Za-z0-9_-]{8,64})?\Z"),
-    re.compile(r"/locations/[A-Za-z0-9_-]{8,64}/customFields\Z"),
+    re.compile(r"/locations/[A-Za-z0-9_-]{8,64}/customFields(?:/[A-Za-z0-9_-]{8,64})?\Z"),
     re.compile(r"/locations/[A-Za-z0-9_-]{8,64}/tags(?:/[A-Za-z0-9_-]{8,64})?\Z"),
+    re.compile(r"/users/\Z"),
     re.compile(r"/contacts/\Z"),
     re.compile(r"/contacts/upsert\Z"),
-    re.compile(r"/contacts/[A-Za-z0-9_-]{8,64}(?:/(?:tags|notes))?\Z"),
-    re.compile(r"/opportunities/pipelines\Z"),
+    re.compile(r"/contacts/[A-Za-z0-9_-]{8,64}(?:/(?:tags|notes|tasks(?:/[A-Za-z0-9_-]{8,64})?|appointments))?\Z"),
+    re.compile(r"/opportunities/pipelines(?:/[A-Za-z0-9_-]{8,64})?\Z"),
     re.compile(r"/opportunities/search\Z"),
     re.compile(r"/opportunities/\Z"),
     re.compile(r"/opportunities/[A-Za-z0-9_-]{8,64}\Z"),
     re.compile(r"/calendars/\Z"),
+    re.compile(r"/calendars/events(?:/appointments(?:/[A-Za-z0-9_-]{8,64})?)?\Z"),
     re.compile(r"/calendars/[A-Za-z0-9_-]{8,64}(?:/free-slots)?\Z"),
     re.compile(r"/conversations/search\Z"),
+    re.compile(r"/conversations/messages\Z"),
+    re.compile(r"/conversations/[A-Za-z0-9_-]{8,64}(?:/messages)?\Z"),
     re.compile(r"/workflows/\Z"),
     re.compile(r"/workflows/search\Z"),
     re.compile(r"/workflows/step-types\Z"),
@@ -47,7 +51,12 @@ ALLOWED_PATHS = (
     re.compile(r"/forms/\Z"),
     re.compile(r"/surveys/\Z"),
     re.compile(r"/emails/builder\Z"),
-    re.compile(r"/links/\Z"),
+    re.compile(r"/links/(?:[A-Za-z0-9_-]{8,64})?\Z"),
+    re.compile(r"/medias/files\Z"),
+    re.compile(r"/products/\Z"),
+    re.compile(r"/invoices/\Z"),
+    re.compile(r"/payments/transactions\Z"),
+    re.compile(r"/blogs/site/all\Z"),
     re.compile(r"/funnels/funnel/list\Z"),
     re.compile(r"/funnels/page(?:/count)?\Z"),
     re.compile(r"/funnels/lookup/redirect/list\Z"),
@@ -89,8 +98,8 @@ ALLOWED_BACKEND_PATHS = (
     re.compile(r"/workflow/[A-Za-z0-9_-]{8,64}/[A-Za-z0-9_-]{8,64}(?:/copy-workflow)?\Z"),
     re.compile(r"/forms/\Z"),
     re.compile(r"/surveys/\Z"),
-    re.compile(r"/emails/builder\Z"),
-    re.compile(r"/links/\Z"),
+    re.compile(r"/emails/builder(?:/[A-Za-z0-9_-]{8,64}/[A-Za-z0-9_-]{8,64})?\Z"),
+    re.compile(r"/links/(?:[A-Za-z0-9_-]{8,64})?\Z"),
     re.compile(r"/funnels/funnel/list\Z"),
     re.compile(r"/snapshots/v2/[A-Za-z0-9_-]{8,64}\Z"),
     re.compile(r"/snapshots/snapshotDetails/[A-Za-z0-9_-]{8,64}\Z"),
@@ -109,7 +118,7 @@ ALLOWED_BACKEND_PATHS = (
     re.compile(r"/snapshots/locations/[A-Za-z0-9_-]{8,64}/snapshot-history\Z"),
     re.compile(r"/snapshots/share/v2/link\Z"),
     re.compile(r"/oauth/static/scopes\Z"),
-    re.compile(r"/marketplace/private-integration/location/[A-Za-z0-9_-]{8,64}(?:/[A-Za-z0-9_-]{8,64})?\Z"),
+    re.compile(r"/marketplace/private-integration/location/[A-Za-z0-9_-]{8,64}(?:/(?:integration/)?[A-Za-z0-9_-]{8,64})?\Z"),
     re.compile(r"/users/search\Z"),
     re.compile(r"/users/permissions\Z"),
     re.compile(r"/users/[A-Za-z0-9_-]{8,64}\Z"),
@@ -148,17 +157,18 @@ ALLOWED_BACKEND_WRITE_PATHS = (
     re.compile(r"/opportunities/[A-Za-z0-9_-]{8,64}\Z"),
     re.compile(r"/calendars/\Z"),
     re.compile(r"/calendars/[A-Za-z0-9_-]{8,64}\Z"),
+    re.compile(r"/links/(?:[A-Za-z0-9_-]{8,64})?\Z"),
     re.compile(r"/workflows/\Z"),
     re.compile(r"/workflows/[A-Za-z0-9_-]{8,64}\Z"),
     re.compile(r"/workflow/[A-Za-z0-9_-]{8,64}/change-status(?:/[A-Za-z0-9_-]{8,64})?\Z"),
-    re.compile(r"/workflow/[A-Za-z0-9_-]{8,64}/[A-Za-z0-9_-]{8,64}/copy-workflow\Z"),
+    re.compile(r"/workflow/[A-Za-z0-9_-]{8,64}/[A-Za-z0-9_-]{8,64}(?:/copy-workflow)?\Z"),
     re.compile(r"/snapshots/create\Z"),
     re.compile(r"/snapshots/[A-Za-z0-9_-]{8,64}/refresh\Z"),
     re.compile(r"/snapshots/[A-Za-z0-9_-]{8,64}/update\Z"),
     re.compile(r"/snapshots/[A-Za-z0-9_-]{8,64}/conflicts\Z"),
     re.compile(r"/snapshots/snapshot-push/v2/[A-Za-z0-9_-]{8,64}/set_assets_to_locations\Z"),
     re.compile(r"/snapshots/share/v2/link\Z"),
-    re.compile(r"/marketplace/private-integration/location/[A-Za-z0-9_-]{8,64}(?:/[A-Za-z0-9_-]{8,64})?\Z"),
+    re.compile(r"/marketplace/private-integration/location/[A-Za-z0-9_-]{8,64}(?:/(?:integration/)?[A-Za-z0-9_-]{8,64})?\Z"),
     re.compile(r"/users/[A-Za-z0-9_-]{8,64}\Z"),
     re.compile(r"/reporting/dashboards/[A-Za-z0-9_-]{8,64}/permissions\Z"),
     re.compile(r"/reporting/dashboards/[A-Za-z0-9_-]{8,64}/duplicate\Z"),
@@ -175,7 +185,35 @@ ALLOWED_BACKEND_WRITE_PATHS = (
     re.compile(r"/internal-tools/billing/update-tax\Z"),
 )
 
+ALLOWED_CLIENT_WRITE_PATHS = (
+    re.compile(r"/locations/[A-Za-z0-9_-]{8,64}\Z"),
+    re.compile(r"/locations/[A-Za-z0-9_-]{8,64}/customValues(?:/[A-Za-z0-9_-]{8,64})?\Z"),
+    re.compile(r"/locations/[A-Za-z0-9_-]{8,64}/customFields(?:/[A-Za-z0-9_-]{8,64})?\Z"),
+    re.compile(r"/locations/[A-Za-z0-9_-]{8,64}/tags(?:/[A-Za-z0-9_-]{8,64})?\Z"),
+    re.compile(r"/contacts/\Z"),
+    re.compile(r"/contacts/upsert\Z"),
+    re.compile(r"/contacts/[A-Za-z0-9_-]{8,64}(?:/(?:tags|notes|tasks(?:/[A-Za-z0-9_-]{8,64})?))?\Z"),
+    re.compile(r"/opportunities/[A-Za-z0-9_-]{8,64}\Z"),
+    re.compile(r"/calendars/[A-Za-z0-9_-]{8,64}\Z"),
+    re.compile(r"/calendars/events/appointments(?:/[A-Za-z0-9_-]{8,64})?\Z"),
+    re.compile(r"/conversations/messages\Z"),
+    re.compile(r"/links/(?:[A-Za-z0-9_-]{8,64})?\Z"),
+    re.compile(r"/objects/[A-Za-z0-9._-]{2,80}/records/search\Z"),
+    re.compile(r"/workflows/search\Z"),
+    re.compile(r"/workflows/definition/validate\Z"),
+    re.compile(r"/workflows/[A-Za-z0-9_-]{8,64}/(?:status|definition)\Z"),
+    re.compile(r"/social-media-posting/[A-Za-z0-9_-]{8,64}/posts/list\Z"),
+    re.compile(r"/social-media-posting/[A-Za-z0-9_-]{8,64}/posts(?:/[A-Za-z0-9_-]{8,64})?\Z"),
+)
+
 MAX_RESPONSE = 16 * 1024 * 1024
+MAX_CONFIG_BYTES = 1024 * 1024
+_MACOS_SYSTEM_SYMLINKS = {Path("/var"), Path("/tmp"), Path("/etc")}
+_SECRET_PATTERNS = (
+    re.compile(r"\bpit-[A-Za-z0-9_-]{6,}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+    re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._-]{8,}"),
+)
 
 _WORKER_INDEXEDDB_SCRIPT = r"""
 const fs = require('fs');
@@ -247,11 +285,35 @@ def _valid_token(value: str | None, env_hint: str = "GHL_PIT (or GHL_ACCESS_TOKE
     return value
 
 
+def scrub_secrets(text: str) -> str:
+    """Redact any accidental PIT, JWT, or Bearer token substrings from error messages."""
+    cleaned = str(text or "")
+    for pat in _SECRET_PATTERNS:
+        cleaned = pat.sub("[REDACTED]", cleaned)
+    return cleaned
+
+
+def _reject_symlink_chain(path: Path) -> None:
+    """Refuse symlinked config files or parent directories (allowing macOS system root links)."""
+    for candidate in (path, *path.parents):
+        if candidate in _MACOS_SYSTEM_SYMLINKS:
+            continue
+        try:
+            if candidate.is_symlink():
+                raise HighLevelError("Refusing to read or write symlinked configuration path.")
+        except OSError as exc:
+            raise HighLevelError("Unable to inspect configuration path safety.") from exc
+
+
 def subaccount_config_path() -> Path:
     custom = os.environ.get("GHL_CONFIG_FILE")
     if custom:
-        return Path(custom).expanduser().resolve()
-    return Path.home() / ".config" / "legends-gohighlevel" / "config.json"
+        candidate = Path(custom).expanduser()
+        _reject_symlink_chain(candidate)
+        return candidate
+    candidate = Path.home() / ".config" / "legends-gohighlevel" / "config.json"
+    _reject_symlink_chain(candidate)
+    return candidate
 
 
 def _mask_token(tok: str | None) -> str | None:
@@ -261,16 +323,24 @@ def _mask_token(tok: str | None) -> str | None:
     return f"{prefix}****{tok[-4:]}"
 
 
+def _read_safe_json_dict(cfg_path: Path) -> dict[str, Any]:
+    _reject_symlink_chain(cfg_path)
+    if not cfg_path.is_file():
+        return {}
+    try:
+        if cfg_path.stat().st_size > MAX_CONFIG_BYTES:
+            raise HighLevelError("Configuration file exceeds 1 MB size limit.")
+        loaded = json.loads(cfg_path.read_text(encoding="utf-8"))
+        return loaded if isinstance(loaded, dict) else {}
+    except HighLevelError:
+        raise
+    except (OSError, ValueError):
+        return {}
+
+
 def load_subaccount_config(profile: str | None = None) -> dict[str, Any]:
     cfg_path = subaccount_config_path()
-    file_cfg: dict[str, Any] = {}
-    if cfg_path.is_file():
-        try:
-            loaded = json.loads(cfg_path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                file_cfg = loaded
-        except (OSError, ValueError):
-            file_cfg = {}
+    file_cfg = _read_safe_json_dict(cfg_path)
 
     raw_profiles = file_cfg.get("profiles") if isinstance(file_cfg.get("profiles"), dict) else {}
     selected_profile = (
@@ -324,23 +394,132 @@ def load_subaccount_config(profile: str | None = None) -> dict[str, Any]:
     }
 
 
+def _read_raw_subaccount_config() -> tuple[Path, dict[str, Any]]:
+    cfg_path = subaccount_config_path()
+    return cfg_path, _read_safe_json_dict(cfg_path)
+
+
+def _write_raw_subaccount_config(cfg_path: Path, file_cfg: dict[str, Any]) -> None:
+    _reject_symlink_chain(cfg_path)
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(file_cfg, indent=2) + "\n"
+    if len(payload.encode("utf-8")) > MAX_CONFIG_BYTES:
+        raise HighLevelError("Configuration payload exceeds 1 MB size limit.")
+    cfg_path.write_text(payload, encoding="utf-8")
+    try:
+        os.chmod(cfg_path, 0o600)
+    except OSError:
+        pass
+
+
+def save_subaccount_profile(
+    *,
+    profile: str,
+    location_id: str,
+    pit: str,
+    name: str | None = None,
+    set_default: bool = False,
+) -> dict[str, Any]:
+    prof_key = OBJECT_KEY_RE.fullmatch((profile or "").strip())
+    if not prof_key:
+        raise HighLevelError("Expected a valid profile identifier (2-80 chars: letters, digits, ., _, -).")
+    prof_name = prof_key.group(0)
+    lid = valid_id(location_id)
+    tok = _valid_token(pit, env_hint="--pit")
+
+    cfg_path, file_cfg = _read_raw_subaccount_config()
+    profiles = file_cfg.get("profiles")
+    if not isinstance(profiles, dict):
+        profiles = {}
+    profiles[prof_name] = {
+        "name": (name or prof_name).strip(),
+        "location_id": lid,
+        "pit": tok,
+    }
+    file_cfg["profiles"] = profiles
+    if set_default or not file_cfg.get("default_profile"):
+        file_cfg["default_profile"] = prof_name
+        file_cfg["location_id"] = lid
+        file_cfg["pit"] = tok
+
+    _write_raw_subaccount_config(cfg_path, file_cfg)
+    summary = load_subaccount_config(profile=prof_name)
+    summary.pop("_resolved_token", None)
+    return {
+        "mode": "applied",
+        "action": "save_subaccount_profile",
+        "profile": prof_name,
+        "location_id": lid,
+        "token_masked": _mask_token(tok),
+        "default_profile": file_cfg.get("default_profile"),
+        "config": summary,
+    }
+
+
+def set_default_subaccount_profile(*, profile: str) -> dict[str, Any]:
+    prof_name = (profile or "").strip()
+    cfg_path, file_cfg = _read_raw_subaccount_config()
+    profiles = file_cfg.get("profiles") if isinstance(file_cfg.get("profiles"), dict) else {}
+    if prof_name not in profiles or not isinstance(profiles.get(prof_name), dict):
+        raise HighLevelError(f"Profile '{prof_name}' not found in {cfg_path}.")
+    entry = profiles[prof_name]
+    file_cfg["default_profile"] = prof_name
+    if entry.get("location_id"):
+        file_cfg["location_id"] = entry["location_id"]
+    tok = entry.get("pit") or entry.get("token")
+    if tok:
+        file_cfg["pit"] = tok
+    _write_raw_subaccount_config(cfg_path, file_cfg)
+    summary = load_subaccount_config(profile=prof_name)
+    summary.pop("_resolved_token", None)
+    return {
+        "mode": "applied",
+        "action": "set_default_subaccount_profile",
+        "default_profile": prof_name,
+        "config": summary,
+    }
+
+
+def delete_subaccount_profile(*, profile: str) -> dict[str, Any]:
+    prof_name = (profile or "").strip()
+    cfg_path, file_cfg = _read_raw_subaccount_config()
+    profiles = file_cfg.get("profiles") if isinstance(file_cfg.get("profiles"), dict) else {}
+    if prof_name not in profiles:
+        raise HighLevelError(f"Profile '{prof_name}' not found in {cfg_path}.")
+    profiles.pop(prof_name, None)
+    file_cfg["profiles"] = profiles
+    if file_cfg.get("default_profile") == prof_name:
+        next_default = next(iter(profiles), None)
+        file_cfg["default_profile"] = next_default
+        if next_default and isinstance(profiles.get(next_default), dict):
+            file_cfg["location_id"] = profiles[next_default].get("location_id")
+            file_cfg["pit"] = profiles[next_default].get("pit") or profiles[next_default].get("token")
+    _write_raw_subaccount_config(cfg_path, file_cfg)
+    summary = load_subaccount_config()
+    summary.pop("_resolved_token", None)
+    return {
+        "mode": "applied",
+        "action": "delete_subaccount_profile",
+        "deleted_profile": prof_name,
+        "default_profile": file_cfg.get("default_profile"),
+        "config": summary,
+    }
+
+
 def agency_config_path() -> Path:
     custom = os.environ.get("GHL_AGENCY_CONFIG")
     if custom:
-        return Path(custom).expanduser().resolve()
-    return Path.home() / ".config" / "legends-gohighlevel" / "agency.json"
+        candidate = Path(custom).expanduser()
+        _reject_symlink_chain(candidate)
+        return candidate
+    candidate = Path.home() / ".config" / "legends-gohighlevel" / "agency.json"
+    _reject_symlink_chain(candidate)
+    return candidate
 
 
 def load_agency_config() -> dict[str, Any]:
     cfg_path = agency_config_path()
-    file_cfg: dict[str, Any] = {}
-    if cfg_path.is_file():
-        try:
-            loaded = json.loads(cfg_path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                file_cfg = loaded
-        except (OSError, ValueError):
-            file_cfg = {}
+    file_cfg = _read_safe_json_dict(cfg_path)
 
     company_id = os.environ.get("GHL_COMPANY_ID") or file_cfg.get("company_id") or ""
     worker_ssh = os.environ.get("GHL_WORKER_SSH") or file_cfg.get("worker_ssh") or ""
@@ -408,7 +587,7 @@ def extract_worker_token_via_ssh(
                 check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            raise HighLevelError(f"Failed to execute SSH worker token extraction: {exc}") from None
+            raise HighLevelError(f"Failed to execute SSH worker token extraction: {scrub_secrets(str(exc))}") from None
 
     proc = _run_extract()
     if proc.returncode != 0:
@@ -482,6 +661,9 @@ class Client:
     def _allowed_path(self, path: str) -> bool:
         return any(pattern.fullmatch(path) for pattern in ALLOWED_PATHS)
 
+    def _allowed_write_path(self, path: str) -> bool:
+        return any(pattern.fullmatch(path) for pattern in ALLOWED_CLIENT_WRITE_PATHS)
+
     def _extract_rate_limits(self, headers) -> dict[str, int | str | None]:
         if not headers:
             return {}
@@ -516,19 +698,7 @@ class Client:
             raise HighLevelError("Unsupported HTTP method.")
         if version not in {API_VERSION, API_VERSION_V3}:
             raise HighLevelError("Unsupported HighLevel API Version header.")
-        if method in {"POST", "PUT", "DELETE"} and not (
-            re.fullmatch(r"/locations/[A-Za-z0-9_-]{8,64}/customValues(?:/[A-Za-z0-9_-]{8,64})?", path)
-            or re.fullmatch(r"/locations/[A-Za-z0-9_-]{8,64}/tags(?:/[A-Za-z0-9_-]{8,64})?", path)
-            or re.fullmatch(r"/contacts/upsert", path)
-            or re.fullmatch(r"/contacts/[A-Za-z0-9_-]{8,64}(?:/(?:tags|notes))?", path)
-            or re.fullmatch(r"/opportunities/[A-Za-z0-9_-]{8,64}", path)
-            or re.fullmatch(r"/objects/[A-Za-z0-9._-]{2,80}/records/search", path)
-            or re.fullmatch(r"/workflows/search", path)
-            or re.fullmatch(r"/workflows/definition/validate", path)
-            or re.fullmatch(r"/workflows/[A-Za-z0-9_-]{8,64}/(?:status|definition)", path)
-            or re.fullmatch(r"/social-media-posting/[A-Za-z0-9_-]{8,64}/posts/list", path)
-            or re.fullmatch(r"/social-media-posting/[A-Za-z0-9_-]{8,64}/posts(?:/[A-Za-z0-9_-]{8,64})?", path)
-        ):
+        if method in {"POST", "PUT", "DELETE"} and not self._allowed_write_path(path):
             raise HighLevelError("Write method is restricted to reviewed single-resource CRM endpoints.")
 
         url = API_ROOT + path

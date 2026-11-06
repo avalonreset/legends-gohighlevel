@@ -19,14 +19,14 @@ Attach the knowledge pack with `legends-empire`:
 ```sh
 legends-empire knowledge attach \
   --vault <VAULT_ROOT> \
-  --operation-id attach-legends-gohighlevel-0.3.1 \
-  --generated-at 2026-11-04T13:00:00Z \
+  --operation-id attach-legends-gohighlevel-0.3.4 \
+  --generated-at 2026-11-06T22:00:00Z \
   knowledge/gohighlevel/pack.json
 
 legends-empire knowledge attach \
   --vault <VAULT_ROOT> \
-  --operation-id attach-legends-gohighlevel-0.3.1 \
-  --generated-at 2026-11-04T13:00:00Z \
+  --operation-id attach-legends-gohighlevel-0.3.4 \
+  --generated-at 2026-11-06T22:00:00Z \
   --approved-plan-sha256 <SHA256> \
   --apply \
   knowledge/gohighlevel/pack.json

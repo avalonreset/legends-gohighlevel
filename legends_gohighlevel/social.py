@@ -17,11 +17,12 @@ import urllib.parse
 import urllib.request
 import uuid
 
-from .api import Client, HighLevelError, NoRedirect, valid_id
+from .api import Client, HighLevelError, MAX_CONFIG_BYTES, NoRedirect, _reject_symlink_chain, scrub_secrets, valid_id
 
 X_API_V2_ROOT = "https://api.twitter.com/2"
 X_UPLOAD_URL = "https://upload.twitter.com/1.1/media/upload.json"
 ALLOWED_MEDIA_HOSTS = {"assets.cdn.filesafe.space", "storage.googleapis.com"}
+MAX_MEDIA_BYTES = 512 * 1024 * 1024
 DEFAULT_CUTOFF_ISO = "2026-10-27T00:00:00Z"
 
 
@@ -93,10 +94,14 @@ def load_env_file(env_path: Path | None = None) -> dict[str, str]:
     merged: dict[str, str] = {}
     env_file_override = os.environ.get("GHL_ENV_FILE")
     candidate_file = env_path or (
-        Path(env_file_override).expanduser().resolve() if env_file_override else None
+        Path(env_file_override).expanduser() if env_file_override else None
     )
+    if candidate_file:
+        _reject_symlink_chain(candidate_file)
     if candidate_file and candidate_file.is_file():
         try:
+            if candidate_file.stat().st_size > MAX_CONFIG_BYTES:
+                raise HighLevelError("Environment file exceeds 1 MB size limit.")
             for raw_line in candidate_file.read_text(encoding="utf-8").splitlines():
                 line = raw_line.strip()
                 if not line or line.startswith("#") or "=" not in line:
@@ -106,6 +111,8 @@ def load_env_file(env_path: Path | None = None) -> dict[str, str]:
                 if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
                     v = v[1:-1]
                 merged[k.strip()] = v
+        except HighLevelError:
+            raise
         except OSError:
             pass
     for k, v in os.environ.items():
@@ -589,13 +596,20 @@ class GhlXBridge:
             method="GET",
             headers={"User-Agent": "legends-gohighlevel-x-bridge/1.0"},
         )
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), NoRedirect()
+        )
         tmp_target = self.cache_dir / f"ghl-{url_hash}.mp4.part"
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp, tmp_target.open("wb") as out_f:
+            total_bytes = 0
+            with opener.open(req, timeout=120) as resp, tmp_target.open("wb") as out_f:
                 while True:
                     chunk = resp.read(1024 * 1024)
                     if not chunk:
                         break
+                    total_bytes += len(chunk)
+                    if total_bytes > MAX_MEDIA_BYTES:
+                        raise HighLevelError("GHL media download exceeded 512 MB size limit.")
                     out_f.write(chunk)
             tmp_target.replace(target)
         except Exception as exc:
@@ -604,7 +618,7 @@ class GhlXBridge:
                     tmp_target.unlink()
                 except OSError:
                     pass
-            raise HighLevelError(f"Failed to download GHL media URL: {exc}") from None
+            raise HighLevelError(f"Failed to download GHL media URL: {scrub_secrets(str(exc))}") from None
         return target
 
     def sync(
