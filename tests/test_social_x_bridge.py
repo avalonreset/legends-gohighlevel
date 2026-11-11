@@ -142,16 +142,30 @@ class SocialXBridgeTests(unittest.TestCase):
             self.assertEqual(len(prev["actions"]), 1)
             self.assertEqual(prev["actions"][0]["action"], "publish_to_x_preview")
             self.assertEqual(prev["actions"][0]["ghl_post_ids"], ["li_page_1", "li_prof_1"])
+            self.assertTrue(prev.get("plan_sha256"))
 
-            # 2. Apply mode publishes once to X
-            applied = bridge.sync(ghl, x_cli, apply=True, local_media_override=dummy_mp4)
+            # 2. Apply mode publishes once to X when --confirm-plan matches
+            applied = bridge.sync(
+                ghl,
+                x_cli,
+                apply=True,
+                confirm_plan=prev["plan_sha256"],
+                local_media_override=dummy_mp4,
+            )
             self.assertEqual(applied["writes_sent"], 1)
             self.assertEqual(len(x_cli.tweets), 1)
             self.assertEqual(x_cli.tweets[0]["text"], "what do I actually sell to clients? (business intelligence)")
             self.assertEqual(applied["actions"][0]["action"], "published_to_x")
 
             # 3. Subsequent sync is idempotent (already_published, 0 writes)
-            again = bridge.sync(ghl, x_cli, apply=True, local_media_override=dummy_mp4)
+            prev2 = bridge.sync(ghl, x_cli, apply=False)
+            again = bridge.sync(
+                ghl,
+                x_cli,
+                apply=True,
+                confirm_plan=prev2["plan_sha256"],
+                local_media_override=dummy_mp4,
+            )
             self.assertEqual(again["writes_sent"], 0)
             self.assertEqual(len(x_cli.tweets), 1)
             self.assertEqual(again["actions"][0]["action"], "already_published")

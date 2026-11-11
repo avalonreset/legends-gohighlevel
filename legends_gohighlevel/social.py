@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import secrets
 import sqlite3
+import ssl
 import time
 from typing import Any
 import urllib.error
@@ -17,7 +18,17 @@ import urllib.parse
 import urllib.request
 import uuid
 
-from .api import Client, HighLevelError, MAX_CONFIG_BYTES, NoRedirect, _reject_symlink_chain, scrub_secrets, valid_id
+from .api import (
+    Client,
+    HighLevelError,
+    MAX_CONFIG_BYTES,
+    NoRedirect,
+    _reject_symlink_chain,
+    _safe_write_text,
+    scrub_secrets,
+    valid_id,
+)
+from .governance import _PinnedHTTPSHandler, _resolve_and_validate_public_host
 
 X_API_V2_ROOT = "https://api.twitter.com/2"
 X_UPLOAD_URL = "https://upload.twitter.com/1.1/media/upload.json"
@@ -250,6 +261,7 @@ class XOfficialClient:
         media_category: str = "tweet_video",
         max_poll_seconds: int = 300,
     ) -> dict[str, Any]:
+        _reject_symlink_chain(video_path.expanduser())
         if not video_path.is_file():
             raise HighLevelError(f"Video file not found: {video_path}")
         total_bytes = video_path.stat().st_size
@@ -525,16 +537,34 @@ class GhlXBridge:
     def __init__(self, state_dir: Path | None = None):
         env_state = os.environ.get("GHL_X_BRIDGE_STATE_DIR")
         default_state = (
-            Path(env_state).expanduser().resolve()
+            Path(env_state).expanduser()
             if env_state
             else (Path.home() / ".config" / "legends-gohighlevel" / "x-bridge")
         )
-        self.state_dir = state_dir or default_state
+        raw_state = (state_dir or default_state).expanduser()
+        _reject_symlink_chain(raw_state)
+        self.state_dir = raw_state
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        _reject_symlink_chain(self.state_dir)
+        try:
+            os.chmod(self.state_dir, 0o700)
+        except OSError:
+            pass
         self.cache_dir = self.state_dir / "cache"
+        _reject_symlink_chain(self.cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        _reject_symlink_chain(self.cache_dir)
+        try:
+            os.chmod(self.cache_dir, 0o700)
+        except OSError:
+            pass
         self.db_path = self.state_dir / "bridge.sqlite3"
+        _reject_symlink_chain(self.db_path)
         self._init_db()
+        try:
+            os.chmod(self.db_path, 0o600)
+        except OSError:
+            pass
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30)
@@ -584,22 +614,32 @@ class GhlXBridge:
 
     def download_media(self, media_url: str) -> Path:
         parsed = urllib.parse.urlsplit(media_url)
-        if parsed.scheme != "https" or parsed.netloc.lower() not in ALLOWED_MEDIA_HOSTS:
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https" or host not in ALLOWED_MEDIA_HOSTS:
             raise HighLevelError(f"Refusing to download media from untrusted host: {parsed.netloc}")
         url_hash = hashlib.sha256(media_url.encode("utf-8")).hexdigest()[:16]
         target = self.cache_dir / f"ghl-{url_hash}.mp4"
+        _reject_symlink_chain(target)
         if target.is_file() and target.stat().st_size > 0:
             return target
 
+        resolved_ips = _resolve_and_validate_public_host(host, parsed.port or 443)
         req = urllib.request.Request(
             media_url,
             method="GET",
             headers={"User-Agent": "legends-gohighlevel-x-bridge/1.0"},
         )
         opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({}), NoRedirect()
+            urllib.request.ProxyHandler({}),
+            _PinnedHTTPSHandler(
+                connect_ip=resolved_ips[0],
+                sni_hostname=host,
+                context=ssl.create_default_context(),
+            ),
+            NoRedirect(),
         )
         tmp_target = self.cache_dir / f"ghl-{url_hash}.mp4.part"
+        _reject_symlink_chain(tmp_target)
         try:
             total_bytes = 0
             with opener.open(req, timeout=120) as resp, tmp_target.open("wb") as out_f:
@@ -627,10 +667,13 @@ class GhlXBridge:
         x_client: XOfficialClient | None = None,
         *,
         apply: bool = False,
+        confirm_plan: str | None = None,
         cutoff_iso: str = DEFAULT_CUTOFF_ISO,
         reuse_media_id: str | None = None,
         local_media_override: Path | None = None,
     ) -> dict[str, Any]:
+        if local_media_override is not None:
+            _reject_symlink_chain(local_media_override.expanduser())
         cutoff_dt = _parse_iso(cutoff_iso) or datetime(2026, 10, 27, tzinfo=timezone.utc)
         now_dt = datetime.now(timezone.utc)
         now_iso = now_dt.isoformat()
@@ -676,6 +719,68 @@ class GhlXBridge:
                 r["dedupe_key"]: dict(r)
                 for r in conn.execute("SELECT * FROM x_bridge_jobs WHERE location_id = ?", (loc_id,)).fetchall()
             }
+
+            preview_actions: list[dict[str, Any]] = []
+            for dkey, row in existing_rows.items():
+                if dkey not in grouped and row["x_status"] == "scheduled":
+                    preview_actions.append(
+                        {
+                            "dedupe_key": dkey,
+                            "action": "cancel_deleted_ghl_post",
+                            "caption": row["caption"],
+                        }
+                    )
+            for dkey, item in grouped.items():
+                row = existing_rows.get(dkey)
+                sched_dt = _parse_iso(item["schedule_date"]) or now_dt
+                due_now = item["ghl_status"] == "published" or sched_dt <= now_dt
+                if row and row["x_status"] == "published":
+                    preview_actions.append(
+                        {
+                            "dedupe_key": dkey,
+                            "action": "already_published",
+                            "caption": item["caption"],
+                            "x_tweet_url": row["x_tweet_url"],
+                            "x_tweet_id": row["x_tweet_id"],
+                        }
+                    )
+                elif not due_now:
+                    preview_actions.append(
+                        {
+                            "dedupe_key": dkey,
+                            "action": "update_scheduled" if row else "track_scheduled",
+                            "caption": item["caption"],
+                            "schedule_date": item["schedule_date"],
+                            "ghl_post_ids": item["ghl_post_ids"],
+                        }
+                    )
+                else:
+                    preview_actions.append(
+                        {
+                            "dedupe_key": dkey,
+                            "action": "publish_to_x_preview",
+                            "caption": item["caption"],
+                            "media_url": item["media_url"],
+                            "schedule_date": item["schedule_date"],
+                            "ghl_status": item["ghl_status"],
+                            "ghl_post_ids": item["ghl_post_ids"],
+                        }
+                    )
+
+            plan_core = {
+                "resource": "x_bridge_sync",
+                "location_id": loc_id,
+                "cutoff_iso": cutoff_iso,
+                "actions": preview_actions,
+            }
+            plan_sha256 = hashlib.sha256(
+                json.dumps(plan_core, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+
+            if apply and confirm_plan != plan_sha256:
+                raise HighLevelError(
+                    "--confirm-plan hash does not match the current X bridge preview state; re-run x-bridge-sync preview."
+                )
 
             # Mark scheduled jobs whose GHL posts were deleted before publication as cancelled
             for dkey, row in existing_rows.items():
@@ -902,11 +1007,12 @@ class GhlXBridge:
             "mode": "apply" if apply else "preview",
             "location_id": loc_id,
             "cutoff_iso": cutoff_iso,
+            "plan_sha256": plan_sha256,
             "writes_sent": writes_sent,
             "actions": actions,
             "jobs": self.list_jobs(),
         }
         if apply:
             status_file = self.state_dir / "latest-status.json"
-            status_file.write_text(json.dumps(result, indent=2), encoding="utf-8")
+            _safe_write_text(status_file, json.dumps(result, indent=2), overwrite=True, mode=0o600)
         return result

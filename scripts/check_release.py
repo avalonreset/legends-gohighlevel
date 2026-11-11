@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SKIP = {".git", ".venv", "dist", "build", "__pycache__", ".github-audit", ".integration"}
 REQUIRED = [
     ".legends-module",
+    ".legends-router-pin",
     "README.md",
     "LICENSE",
     "NOTICE",
@@ -62,7 +63,12 @@ FORBIDDEN = [
     r"ctypes\.windll",
     r"(?i)CryptUnprotectData",
     r"(?i)GetAsyncKeyState",
+    r"(?i)windowsHide\s*:\s*true",
     r"(?i)(?:[ce]:[\\/](?:users|empire|legends-)|ctolegends\.com)",
+    r"\b(?!12-3456789\b|00-0000000\b)\d{2}-\d{7}\b",
+    r"(?i)[a-z0-9._%+-]+@gmail\.com",
+    r"\bEAA(?!QplTDtestsecret)[A-Za-z0-9]{20,}\b",
+    r"\bpit-(?!1234567890abcdef|abcdef1234567890|us-valid-token-999999|us-test-1234-5678-abcdef123456|valid-token-value-12345)[A-Za-z0-9_-]{16,}\b",
 ]
 FORBIDDEN_FILES = {".pem", ".key", ".p12", ".pfx", ".ps1", ".bat", ".cmd", ".vbs", ".ahk", ".ttf", ".otf"}
 PNG_METADATA_CHUNKS = {"tEXt", "iTXt", "zTXt", "eXIf"}
@@ -190,7 +196,7 @@ def check(root: Path = ROOT) -> list[str]:
         if path.suffix.lower() in {".png", ".webp"}:
             errors.extend(f"{rel}: {issue}" for issue in image_metadata_issues(path))
             continue
-        if path.suffix not in TEXT_SUFFIXES and path.name not in {"LICENSE", "NOTICE", ".legends-module"}:
+        if path.suffix not in TEXT_SUFFIXES and path.name not in {"LICENSE", "NOTICE", ".legends-module", ".legends-router-pin"}:
             continue
         text = path.read_text(encoding="utf-8-sig")
         if path.name != "check_release.py":

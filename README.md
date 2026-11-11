@@ -9,9 +9,9 @@
 
 **GoHighLevel API v2, Workflows v3, Voice/Conversation AI, Custom Objects, Snapshots V2 Batch Cloning, Workflow Step X-Ray, Atomic Rebranding, and 5-layer SaaS agency governance CLI with preview-first mutations, API readback, and a reusable knowledge vault.**
 
-Use this 70-command Python **GoHighLevel CLI** (`legends-gohighlevel`) with your coding agent across both **Sub-Account Operator** (`GHL_PIT` / multi-profile `config.json`) and **Agency Owner** (`GHL_TOKEN_ID` / `worker_ssh`) planes:
-- **Sub-Account CRM, Multi-Location Profiles, Atomic Rebranding & Commerce (`services.leadconnectorhq.com`):** Audit and operate GoHighLevel / HighLevel sub-accounts (`subaccount-audit`, `subaccount-rebrand-audit`, `profiles-matrix`, `subaccount-profile-set`/`use`/`delete`, `subaccount-update`, `subaccount-rebrand`, `location`, `subaccount-users`, `pipelines`, `opportunities`, `contacts`, `contact-notes`, `contact-tasks`, `tags`, `calendars`, `calendar-slots`, `calendar-events`, `appointment-create`, `conversations`, `conversation-messages`, `conversation-send`, `workflows`, `workflow-step-types`, `workflow-inspect`, `workflow-logs`, `email-templates`, `trigger-links`, `forms`, `surveys`, `funnels`, `medias`, `products`, `invoices`, `transactions`, `blogs`, `objects`, `object-records`, `associations`, `voice-ai-agents`, `voice-ai-calls`, `conversation-ai-agents`, `custom-fields`, and `custom-values`).
-- **Agency Snapshots V2, 1-Command Batch Cloning, Headless PIT Minting, Workflow X-Ray & 5-Layer Governance (`backend.leadconnectorhq.com`):** Clone and provision $N$ sub-accounts in a single command (`location-batch-clone`, `location-create`, `snapshots-list`, `snapshot-inspect`, `snapshot-create`, `snapshot-refresh`, `snapshot-push`, `snapshot-share-link`), mint 180-scope Private Integration Tokens headlessly (`pit-create`, `pit-list`, `pit-delete`), X-Ray and rebrand internal workflow step graphs (`agency-workflow-xray`, `workflow-steps-rebrand --templatize-senders`, `workflow-bulk-status`, `location-rebrand`), and run live 5-layer agency and dashboard RBAC governance (`live-audit`, `location-full-unnerf`, `location-unnerf`, `user-unnerf`, `user-sync-locations`, `unlock-dashboards`, `smtp-unlock`, `rebilling-sync`, `email-domains`) while keeping operating history in Markdown that works with Obsidian and [`legends-empire`](https://github.com/avalonreset/legends-empire).
+Use this 110-command Python **GoHighLevel CLI** (`legends-gohighlevel`) with your coding agent across both **Sub-Account Operator** (`GHL_PIT` / multi-profile `config.json`) and **Agency Owner** (`GHL_TOKEN_ID` / `worker_ssh`) planes:
+- **Sub-Account CRM, Multi-Location Profiles, Atomic Rebranding, Social Planner & Commerce (`services.leadconnectorhq.com`):** Audit and operate GoHighLevel / HighLevel sub-accounts (`doctor`, `resources`, `subaccount-audit`, `subaccount-rebrand-audit`, `profiles-matrix`, `subaccount-profile-set`/`use`/`delete`, `subaccount-update`, `subaccount-rebrand`, `location`, `subaccount-users`, `pipelines`, `opportunities`, `contacts`, `contact-notes`, `contact-tasks`, `tags`, `calendars`, `calendar-slots`, `calendar-events`, `appointment-create`, `conversations`, `conversation-messages`, `conversation-send`, `workflows`, `workflow-step-types`, `workflow-inspect`, `workflow-logs`, `workflow-validate`, `email-templates`, `trigger-links`, `forms`, `surveys`, `funnels`, `medias`, `products`, `invoices`, `transactions`, `blogs`, `social-accounts`, `social-posts`, `x-bridge-status`, `x-bridge-sync`, `objects`, `object-records`, `associations`, `voice-ai-agents`, `voice-ai-calls`, `conversation-ai-agents`, `custom-fields`, and `custom-values`).
+- **Agency Snapshots V2, 1-Command Batch Cloning, A2P 10DLC Trust Center, Headless PIT Minting, Workflow X-Ray & 5-Layer Governance (`backend.leadconnectorhq.com`):** Clone and provision $N$ sub-accounts in a single command (`location-batch-clone`, `location-create`, `location-rename`, `snapshots-list`, `snapshot-inspect`, `snapshot-create`, `snapshot-refresh`, `snapshot-push`, `snapshot-share-link`), audit and stage A2P 10DLC Trust Center and LC Phone compliance (`a2p-preflight`, `a2p-campaign-pack`, `a2p-trust-center-status`, `a2p-trust-center-stage`), mint 180-scope Private Integration Tokens headlessly (`pit-create`, `pit-list`, `pit-delete`), X-Ray and rebrand internal workflow step graphs (`agency-workflow-xray`, `workflow-steps-rebrand --templatize-senders`, `workflow-bulk-status`, `location-rebrand`), and run live 5-layer agency and dashboard RBAC governance (`live-audit`, `location-full-unnerf`, `location-unnerf`, `user-unnerf`, `user-sync-locations`, `unlock-dashboards`, `smtp-unlock`, `rebilling-sync`, `email-domains`) while keeping operating history in Markdown that works with Obsidian and [`legends-empire`](https://github.com/avalonreset/legends-empire).
 
 This is an independent open-source project built on the official HighLevel API v2 and Workflows API v3 (`services.leadconnectorhq.com`) and HighLevel's web-app governance endpoints (`backend.leadconnectorhq.com`). HighLevel provides the CRM platform. This module adds a bounded CLI-first workflow, deterministic governance checks, and source-cited runbooks. It is not affiliated with or endorsed by HighLevel Inc.
 
@@ -47,8 +47,9 @@ legends-gohighlevel doctor
 For live sub-account CRM operations, load `GHL_PIT` (a sub-account Private Integration Token starting with `pit-`, or `GHL_ACCESS_TOKEN`) and `GHL_LOCATION_ID` from your secret manager into the process environment, or configure named sub-account profiles in `~/.config/legends-gohighlevel/config.json` (selectable via `--profile <name>` or `GHL_PROFILE`).
 
 ```sh
+legends-gohighlevel resources
 legends-gohighlevel subaccount-config
-legends-gohighlevel subaccount-profile-set --profile-name client-a --location-id LOCATION_ID --pit pit-xxxx --set-default
+legends-gohighlevel subaccount-profile-set --profile-name client-a --location-id LOCATION_ID --pit @/path/to/pit.txt --set-default
 legends-gohighlevel doctor --live
 legends-gohighlevel subaccount-audit
 legends-gohighlevel subaccount-rebrand-audit --brand-terms "oldbrand,olddomain.com"
@@ -67,6 +68,7 @@ legends-gohighlevel trigger-links
 legends-gohighlevel workflow-step-types
 legends-gohighlevel workflow-inspect --workflow-id WORKFLOW_ID
 legends-gohighlevel workflow-logs --workflow-id WORKFLOW_ID --limit 25
+legends-gohighlevel workflow-validate --definition-json ./workflow-def.json
 legends-gohighlevel forms --limit 50
 legends-gohighlevel surveys --limit 50
 legends-gohighlevel funnels --include-redirects
@@ -76,6 +78,10 @@ legends-gohighlevel products --limit 50
 legends-gohighlevel invoices --limit 50
 legends-gohighlevel transactions --limit 50
 legends-gohighlevel blogs --limit 20
+legends-gohighlevel social-accounts
+legends-gohighlevel social-posts --limit 25
+legends-gohighlevel x-bridge-status
+legends-gohighlevel x-bridge-sync
 legends-gohighlevel objects
 legends-gohighlevel object-records --object-key custom_objects.vehicles --limit 20
 legends-gohighlevel associations
@@ -148,6 +154,8 @@ legends-gohighlevel snapshot-share-link --snapshot-id SNAPSHOT_ID --share-type p
 legends-gohighlevel snapshot-push --snapshot-id SNAPSHOT_ID --location-ids TARGET_LOC_1,TARGET_LOC_2
 legends-gohighlevel snapshot-push --snapshot-id SNAPSHOT_ID --location-ids TARGET_LOC_1,TARGET_LOC_2 \
   --apply --confirm-plan SHA256_FROM_PREVIEW
+legends-gohighlevel location-create --name "New Client Co" --email "dispatch@example.com" --from-location-id SOURCE_LOC_ID
+legends-gohighlevel location-rename --location-id LOCATION_ID --name "Updated Client Co"
 legends-gohighlevel location-batch-clone --source-location-id SOURCE_LOC_ID --snapshot-id SNAPSHOT_ID \
   --names "Client Clone 1,Client Clone 2,Client Clone 3,Client Clone 4" --assign-email user@example.com --create-pits
 legends-gohighlevel pit-create --location-id LOCATION_ID --name "Agent Integration" --save-profile client-1
@@ -158,6 +166,12 @@ legends-gohighlevel workflow-bulk-status --location-id LOCATION_ID --status draf
 legends-gohighlevel workflow-bulk-status --location-id LOCATION_ID --status draft --apply --confirm-plan SHA256_FROM_PREVIEW
 legends-gohighlevel location-clone-audit --location-id LOCATION_ID --brand-terms "oldbrand"
 legends-gohighlevel location-rebrand --location-id LOCATION_ID --name "NewBrand Co" --replace-from "OldBrand" --replace-to "NewBrand" --include-workflow-steps
+legends-gohighlevel a2p-preflight --location-id LOCATION_ID --brand-name "Example Concrete" --website "https://example.com" --email "dispatch@example.com" --phone "+15122345678"
+legends-gohighlevel a2p-campaign-pack --location-id LOCATION_ID --brand-name "Example Concrete" --website "https://example.com" --email "dispatch@example.com" --phone "+15122345678"
+legends-gohighlevel a2p-trust-center-status --location-id LOCATION_ID --area-code 512
+legends-gohighlevel a2p-trust-center-stage --location-id LOCATION_ID --brand-name "Example Concrete" --legal-name "Example Concrete LLC" --ein "12-3456789" \
+  --website "https://example.com" --email "dispatch@example.com" --phone "+15122345678" --address "100 Main St" --city "Austin" --state "TX" --postal-code "78701" \
+  --rep-first-name "Jane" --rep-last-name "Doe" --rep-email "jane.doe@example.com" --rep-phone "+15122345678"
 ```
 
 ## Preview and update sub-account CRM state (`custom-value`, `tag`, `contact`, `opportunity`, `workflow`)

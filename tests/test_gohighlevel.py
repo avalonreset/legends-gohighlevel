@@ -94,7 +94,10 @@ from legends_gohighlevel.governance import (
     SAAS_BILLING_V2_KEYS,
     UNNERFED_LOCATION_PERMISSIONS,
     UNNERFED_V1_PERMISSIONS,
+    a2p_campaign_pack,
+    a2p_preflight,
     dashboard_permission_audit,
+    inspect_a2p_phone,
     markup_to_multiplier,
     multiplier_to_markup,
     rebilling_audit,
@@ -426,6 +429,7 @@ class FakeBackendClient:
             ]
         }
         self.smtp_blocked = {"loc_alpha_1234": True}
+        self.twilio_accounts: dict[str, dict] = {}
 
     def request(
         self,
@@ -434,6 +438,47 @@ class FakeBackendClient:
         body: dict | None = None,
         query: dict | None = None,
     ) -> dict:
+        if method == "POST" and path == "/conversations/providers/twilio/setup/subaccount":
+            lid = (query or {}).get("locationId", "loc_alpha_1234")
+            acc = self.twilio_accounts.setdefault(lid, {})
+            acc.update({
+                "id": f"tw_{lid}",
+                "accountSid": "AC11112222333344445555666677778888",
+                "underGhlAccount": True,
+                "underGHLAccount": True,
+                "twilioSubaccount": {"status": "active"},
+                "locationId": lid,
+            })
+            return dict(acc)
+        if method == "GET" and path == "/conversations/providers/twilio/fetch":
+            lid = (query or {}).get("locationId", "loc_alpha_1234")
+            return dict(self.twilio_accounts.get(lid, {}))
+        if method == "GET" and path == "/phone-system/twilio-accounts":
+            lid = (query or {}).get("entityId", "loc_alpha_1234")
+            return dict(self.twilio_accounts.get(lid, {}))
+        if method == "PUT" and path == "/phone-system/twilio-accounts":
+            assert body is not None
+            lid = (query or {}).get("locationId", "loc_alpha_1234")
+            acc = self.twilio_accounts.setdefault(lid, {})
+            acc.update(body)
+            return dict(acc)
+        if method == "GET" and path.startswith("/phone-system/numbers/location/") and path.endswith("/available"):
+            return {
+                "numbers": [
+                    {
+                        "phoneNumber": "+15122345678",
+                        "friendlyName": "(512) 234-5678",
+                        "locality": "Austin",
+                        "region": "TX",
+                        "postalCode": "78701",
+                        "price": {"number_type": "local", "price": 1.15, "price_unit": "USD"},
+                    }
+                ]
+            }
+        if method == "GET" and path.startswith("/phone-system/numbers/location/"):
+            return {"numbers": [], "total": 0}
+        if method == "GET" and path == "/phone-system/kyc-verification/compliance-check":
+            return {"isCompleted": False, "status": "not-started", "inquiryId": None}
         if method == "GET" and path == "/locations/search":
             return {"locations": list(self.locations.values())}
         if method == "GET" and path.startswith("/locations/") and path.endswith("/customValues"):
@@ -448,8 +493,25 @@ class FakeBackendClient:
         if method == "PUT" and path.startswith("/locations/") and "/customValues" not in path:
             assert body is not None
             lid = path.rsplit("/", 1)[-1]
-            if "name" in body:
-                self.locations[lid]["name"] = body["name"]
+            if lid not in self.locations:
+                self.locations[lid] = {"id": lid, "_id": lid, "companyId": self.company_id}
+            for k in (
+                "name",
+                "legalBusinessName",
+                "address",
+                "city",
+                "state",
+                "postalCode",
+                "country",
+                "phone",
+                "email",
+                "website",
+                "timezone",
+                "businessInformation",
+                "authorizedRepresentative",
+            ):
+                if k in body:
+                    self.locations[lid][k] = body[k]
             if "permissions" in body:
                 self.locations[lid]["permissions"] = dict(body["permissions"])
                 if not self.locations[lid].get("reseller"):
@@ -464,7 +526,7 @@ class FakeBackendClient:
             return {"location": dict(self.locations[lid])}
         if method == "GET" and path.startswith("/saas-api/location-metadata/"):
             lid = path.rsplit("/", 1)[-1]
-            return {"data": dict(self.location_metadata[lid])}
+            return {"data": dict(self.location_metadata.get(lid, {"locationId": lid, "saasMode": "not_activated", "paymentPendingReason": None}))}
         if method == "PUT" and path.startswith("/saas-api/location-metadata/"):
             assert body is not None
             lid = path.rsplit("/", 1)[-1]
@@ -1258,13 +1320,24 @@ class CrmAndMutationTests(unittest.TestCase):
         # 1. Subaccount profile set / use / delete in temp config file
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg_file = Path(tmpdir) / "config.json"
+            pit_file = Path(tmpdir) / "pit.txt"
+            pit_file.write_text("pit-us-valid-token-999999\n", encoding="utf-8")
             with patch.dict(os.environ, {"GHL_CONFIG_FILE": str(cfg_file)}, clear=False):
+                with self.assertRaises(HighLevelError):
+                    execute(
+                        parser().parse_args([
+                            "subaccount-profile-set",
+                            "--profile-name", "klant-a",
+                            "--location-id", "loc_klant_a_1234",
+                            "--pit", "pit-us-valid-token-999999",
+                        ])
+                    )
                 res_set = execute(
                     parser().parse_args([
                         "subaccount-profile-set",
                         "--profile-name", "klant-a",
                         "--location-id", "loc_klant_a_1234",
-                        "--pit", "pit-us-valid-token-999999",
+                        "--pit", f"@{pit_file}",
                         "--name", "Klant A",
                         "--set-default",
                     ])
@@ -1638,6 +1711,294 @@ class CrmAndMutationTests(unittest.TestCase):
         self.assertNotIn("secret_token_xyz123", scrubbed)
         self.assertNotIn("eyJhbGciOiJIUzI1NiJ9", scrubbed)
         self.assertIn("[REDACTED]", scrubbed)
+
+    def test_a2p_phone_and_preflight_detects_redirect_and_dom_mismatches(self) -> None:
+        ph_555 = inspect_a2p_phone("+15125550100")
+        self.assertFalse(ph_555["ok"])
+        self.assertTrue(ph_555["is_555_placeholder"])
+        self.assertEqual(ph_555["area_code"], "512")
+
+        ph_live = inspect_a2p_phone("+15122345678")
+        self.assertTrue(ph_live["ok"])
+        self.assertFalse(ph_live["is_555_placeholder"])
+
+        legacy_dom = {
+            "https://legacy-example.com": {
+                "url": "https://legacy-example.com",
+                "status": 301,
+                "is_redirect": True,
+                "redirect_location": "https://example.com/",
+                "html": "",
+            },
+            "/": """
+            <html><body>
+              <form id="quoteForm">
+                <div class="consent-box">
+                  <input type="checkbox" id="tcpaConsent" name="tcpaConsent" checked required>
+                  <label for="tcpaConsent">
+                    By submitting this request, I authorize my matched concrete and metal building crew to contact me via phone calls, text messages, and emails at the number provided. Msg and data rates may apply. Reply STOP to opt out. View our <a href="/privacy-policy">Privacy Policy</a> and <a href="/terms-of-service">Terms</a>.
+                  </label>
+                </div>
+              </form>
+            </body></html>
+            """,
+            "/privacy-policy": """
+            <html><body>
+              <h2>SMS &amp; Mobile Messaging Compliance</h2>
+              <p>No mobile telephone number or SMS opt-in data is ever sold or shared with third parties for independent marketing purposes.</p>
+            </body></html>
+            """,
+            "/terms-of-service": """
+            <html><body>
+              <h2>Terms of Service</h2>
+              <p>By opting in, you consent to receive SMS updates.</p>
+            </body></html>
+            """,
+        }
+
+        audit_fail = a2p_preflight(
+            brand_name="Example Concrete & Metal",
+            website="https://example.com",
+            email="dispatch@example.com",
+            phone="+15125550100",
+            location_id="loc_test_example_01",
+            current_profile={
+                "name": "Legacy Concrete Building Quotes",
+                "website": "https://legacy-example.com",
+                "email": "quotes@legacy-example.com",
+                "phone": "+15125550100",
+            },
+            dom_fixtures=legacy_dom,
+            skip_http=True,
+        )
+        self.assertFalse(audit_fail["ok"])
+        profile_codes = {i["code"] for i in audit_fail["profile_audit"]["issues"]}
+        self.assertIn("BRAND_NAME_MISMATCH", profile_codes)
+        self.assertIn("WEBSITE_DOMAIN_MISMATCH", profile_codes)
+        self.assertIn("WEBSITE_IS_REDIRECT_PIPE", profile_codes)
+        self.assertIn("EMAIL_DOMAIN_MISMATCH", profile_codes)
+        self.assertIn("PHONE_555_PLACEHOLDER", profile_codes)
+
+        dom_codes = {i["code"] for i in audit_fail["dom_audit"]["issues"]}
+        self.assertIn("SMS_CHECKBOX_PRECHECKED", dom_codes)
+        self.assertIn("SMS_CHECKBOX_REQUIRED", dom_codes)
+        self.assertIn("SMS_CONSENT_BUNDLED_CHANNELS", dom_codes)
+        self.assertIn("MISSING_PROGRAM_NAME_IN_OPTIN", dom_codes)
+        self.assertIn("MISSING_MSG_FREQUENCY_DISCLOSURE", dom_codes)
+        self.assertIn("MISSING_STOP_OR_HELP_DISCLOSURE", dom_codes)
+        self.assertTrue(audit_fail["dom_audit"]["checks"]["privacy_policy_non_sharing_clause"])
+
+        compliant_dom = {
+            "/": audit_fail["dom_audit"]["recommended_optin_html"],
+            "/privacy-policy": legacy_dom["/privacy-policy"],
+            "/terms-of-service": legacy_dom["/terms-of-service"],
+        }
+        audit_pass = a2p_preflight(
+            brand_name="Example Concrete & Metal",
+            website="https://example.com",
+            email="dispatch@example.com",
+            phone="+15122345678",
+            location_id="loc_test_example_01",
+            current_profile={
+                "name": "Example Concrete & Metal",
+                "website": "https://example.com",
+                "email": "dispatch@example.com",
+                "phone": "+15122345678",
+            },
+            dom_fixtures=compliant_dom,
+            skip_http=True,
+        )
+        self.assertTrue(audit_pass["ok"])
+        self.assertEqual(audit_pass["profile_audit"]["issue_count"], 0)
+        self.assertEqual(audit_pass["dom_audit"]["issue_count"], 0)
+        self.assertTrue(audit_pass["dom_audit"]["ok"])
+
+    def test_a2p_cli_commands_and_campaign_pack_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            md_path = Path(tmp) / "A2P-Pack.md"
+            profile_path = Path(tmp) / "subaccount.json"
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "location_id": "loc_test_example_01",
+                        "location_name": "Legacy Concrete Building Quotes",
+                        "website": "https://legacy-example.com",
+                        "email": "quotes@legacy-example.com",
+                        "phone": "+15125550100",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            pf_res = execute(
+                parser().parse_args(
+                    [
+                        "a2p-preflight",
+                        "--location-id",
+                        "loc_test_example_01",
+                        "--brand-name",
+                        "Example Concrete & Metal",
+                        "--website",
+                        "https://example.com",
+                        "--email",
+                        "dispatch@example.com",
+                        "--location-profile-json",
+                        str(profile_path),
+                        "--skip-http",
+                    ]
+                )
+            )
+            self.assertFalse(pf_res["ok"])
+            self.assertGreaterEqual(pf_res["profile_audit"]["issue_count"], 4)
+
+            pack_res = execute(
+                parser().parse_args(
+                    [
+                        "a2p-campaign-pack",
+                        "--location-id",
+                        "loc_test_example_01",
+                        "--brand-name",
+                        "Example Concrete & Metal",
+                        "--website",
+                        "https://example.com",
+                        "--email",
+                        "dispatch@example.com",
+                        "--phone",
+                        "+15122345678",
+                        "--address",
+                        "100 Main St",
+                        "--city",
+                        "Austin",
+                        "--state",
+                        "TX",
+                        "--postal-code",
+                        "78701",
+                        "--output-markdown",
+                        str(md_path),
+                    ]
+                )
+            )
+            self.assertTrue(pack_res["ok"])
+            self.assertEqual(len(pack_res["campaign_registration"]["sample_messages"]), 3)
+            for msg in pack_res["campaign_registration"]["sample_messages"]:
+                self.assertIn("Example Concrete & Metal:", msg)
+                self.assertIn("STOP to opt out", msg)
+            self.assertTrue(md_path.is_file())
+            md_text = md_path.read_text(encoding="utf-8")
+            self.assertIn("A2P 10DLC 1-Shot Registration Pack: Example Concrete & Metal", md_text)
+            self.assertNotIn("\u2014", md_text)
+            self.assertNotIn("\u2013", md_text)
+
+            # Overwrite protection without --overwrite
+            with self.assertRaises(HighLevelError):
+                execute(
+                    parser().parse_args(
+                        [
+                            "a2p-campaign-pack",
+                            "--location-id",
+                            "loc_test_example_01",
+                            "--brand-name",
+                            "Example Concrete & Metal",
+                            "--website",
+                            "https://example.com",
+                            "--email",
+                            "dispatch@example.com",
+                            "--output-markdown",
+                            str(md_path),
+                        ]
+                    )
+                )
+
+            bclient = FakeBackendClient()
+            tc_before = execute(
+                parser().parse_args(
+                    [
+                        "a2p-trust-center-status",
+                        "--location-id",
+                        "loc_test_example_01",
+                    ]
+                ),
+                backend_factory=lambda company_id=None: bclient,
+            )
+            self.assertFalse(tc_before["ok"])
+            self.assertFalse(tc_before["lc_phone_subaccount"]["provisioned"])
+
+            stage_args = [
+                "a2p-trust-center-stage",
+                "--location-id",
+                "loc_test_example_01",
+                "--brand-name",
+                "Example Concrete and Metal",
+                "--legal-name",
+                "Example Concrete LLC",
+                "--ein",
+                "12-3456789",
+                "--website",
+                "https://example.com",
+                "--email",
+                "dispatch@example.com",
+                "--phone",
+                "+15122345678",
+                "--address",
+                "100 Main St",
+                "--city",
+                "Austin",
+                "--state",
+                "TX",
+                "--postal-code",
+                "78701",
+                "--rep-first-name",
+                "Jane",
+                "--rep-last-name",
+                "Doe",
+                "--rep-email",
+                "jane.doe@example.com",
+                "--rep-phone",
+                "+15122345678",
+            ]
+            tc_prev = execute(
+                parser().parse_args(stage_args),
+                backend_factory=lambda company_id=None: bclient,
+            )
+            self.assertEqual(tc_prev["mode"], "preview")
+            self.assertTrue(tc_prev["plan"]["needs_lc_phone_subaccount"])
+
+            tc_app = execute(
+                parser().parse_args(
+                    stage_args + ["--apply", "--confirm-plan", tc_prev["plan"]["sha256"]]
+                ),
+                backend_factory=lambda company_id=None: bclient,
+            )
+            self.assertEqual(tc_app["mode"], "applied")
+            self.assertTrue(tc_app["verified"])
+            self.assertEqual(tc_app["writes_sent"], 3)
+            self.assertTrue(tc_app["status"]["lc_phone_subaccount"]["provisioned"])
+            self.assertEqual(tc_app["status"]["business_profile"]["ein"], "12-3456789")
+            self.assertEqual(
+                tc_app["status"]["business_profile"]["legal_business_name"],
+                "Example Concrete LLC",
+            )
+            self.assertTrue(tc_app["status"]["campaign_draft"]["staged"])
+
+    def test_v035_security_hardening_dns_pinning_and_completed_steps(self) -> None:
+        from legends_gohighlevel.governance import _normalize_root_url, _probe_public_url
+        from legends_gohighlevel.agency import make_location_create_plan
+
+        with self.assertRaises(HighLevelError):
+            _normalize_root_url("http://example.com")
+        with self.assertRaises(HighLevelError):
+            _normalize_root_url("https://127.0.0.1")
+        with self.assertRaises(HighLevelError):
+            _normalize_root_url("https://metadata.local")
+        with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("169.254.169.254", 443))]):
+            with self.assertRaises(HighLevelError):
+                _probe_public_url("https://example.com")
+        with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("100.64.0.1", 443))]):
+            with self.assertRaises(HighLevelError):
+                _probe_public_url("https://example.com")
+
+        bclient = FakeBackendClient()
+        with self.assertRaises(HighLevelError):
+            make_location_create_plan(bclient, name="Missing Email Subaccount")
 
 
 if __name__ == "__main__":

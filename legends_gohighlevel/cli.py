@@ -4,11 +4,13 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import sys
 
 from . import __version__
 from .agency import (
+    apply_a2p_trust_center_stage_plan,
     apply_location_batch_clone_plan,
     apply_location_create_plan,
     apply_location_full_unnerf_plan,
@@ -28,6 +30,7 @@ from .agency import (
     apply_user_unnerf_plan,
     apply_workflow_bulk_status_plan,
     apply_workflow_steps_rebrand_plan,
+    inspect_a2p_trust_center_status,
     inspect_agency_snapshot,
     inspect_agency_workflows_xray,
     inspect_dashboard_permissions,
@@ -42,6 +45,7 @@ from .agency import (
     list_location_workflows_backend,
     list_private_integrations,
     live_agency_audit,
+    make_a2p_trust_center_stage_plan,
     make_location_batch_clone_plan,
     make_location_create_plan,
     make_location_full_unnerf_plan,
@@ -66,11 +70,15 @@ from .api import (
     BackendClient,
     Client,
     HighLevelError,
+    MAX_CONFIG_BYTES,
+    _reject_symlink_chain,
+    _safe_write_text,
     delete_subaccount_profile,
     load_agency_config,
     load_subaccount_config,
     save_subaccount_profile,
     set_default_subaccount_profile,
+    valid_id,
 )
 from .crm import (
     apply_appointment_create_plan,
@@ -144,7 +152,14 @@ from .crm import (
     triage_conversations,
     validate_workflow_definition,
 )
-from .governance import dashboard_permission_audit, rebilling_audit, scope_audit, smtp_audit
+from .governance import (
+    a2p_campaign_pack,
+    a2p_preflight,
+    dashboard_permission_audit,
+    rebilling_audit,
+    scope_audit,
+    smtp_audit,
+)
 from .social import (
     DEFAULT_CUTOFF_ISO,
     GhlXBridge,
@@ -526,7 +541,9 @@ def parser() -> argparse.ArgumentParser:
     prof_set = sub.add_parser("subaccount-profile-set", help="Save or update a named sub-account profile (location_id + PIT) in ~/.config/legends-gohighlevel/config.json.")
     prof_set.add_argument("--profile-name", required=True, help="Profile key (e.g. klant-a or test-2).")
     prof_set.add_argument("--location-id", required=True)
-    prof_set.add_argument("--pit", required=True, help="Sub-account Private Integration Token (pit-...).")
+    prof_set.add_argument("--pit", help="Path reference (@/path/to/pit.txt) for sub-account PIT (or set GHL_PIT / --pit-file / --pit-stdin; raw token literals on argv are refused).")
+    prof_set.add_argument("--pit-file", help="File path containing the sub-account Private Integration Token.")
+    prof_set.add_argument("--pit-stdin", action="store_true", help="Read the sub-account Private Integration Token from standard input.")
     prof_set.add_argument("--name", help="Human-readable workspace label.")
     prof_set.add_argument("--set-default", action="store_true", help="Make this profile the default sub-account profile.")
 
@@ -629,7 +646,6 @@ def parser() -> argparse.ArgumentParser:
     pit_cr.add_argument("--description", default="")
     pit_cr.add_argument("--save-profile", help="Automatically save the new PIT into ~/.config/legends-gohighlevel/config.json under this profile name.")
     pit_cr.add_argument("--set-default-profile", action="store_true", help="Set --save-profile as the default sub-account profile.")
-    pit_cr.add_argument("--reveal-token", action="store_true", help="Include the raw unmasked token in the applied output.")
     pit_cr.add_argument("--company-id")
     pit_cr.add_argument("--apply", action="store_true")
     pit_cr.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
@@ -794,11 +810,162 @@ def parser() -> argparse.ArgumentParser:
 
     xb_sync = sub.add_parser("x-bridge-sync", help="Preview or apply syncing of 16:9 GoHighLevel Social Planner video posts to Official X API.")
     xb_sync.add_argument("--apply", action="store_true")
+    xb_sync.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
     xb_sync.add_argument("--cutoff-iso", default=DEFAULT_CUTOFF_ISO)
     xb_sync.add_argument("--reuse-media-id", help="Reuse an already uploaded X media_id_string.")
     xb_sync.add_argument("--local-media", help="Local MP4 path override to avoid re-downloading from CDN.")
 
+    a2p_pf = sub.add_parser(
+        "a2p-preflight",
+        help="Audit GHL location profile and live website DOM for TCR/Twilio A2P 10DLC and LC Phone readiness.",
+    )
+    a2p_pf.add_argument("--location-id", help="Target GoHighLevel location ID.")
+    a2p_pf.add_argument("--brand-name", required=True, help="Target canonical brand name.")
+    a2p_pf.add_argument("--legal-name", help="Registered umbrella legal entity name (e.g. Example Holdings LLC) to verify DBA bridge on /privacy-policy and /terms-of-service.")
+    a2p_pf.add_argument("--website", required=True, help="Target canonical website URL (must return 200 OK, not a 301 redirect pipe).")
+    a2p_pf.add_argument("--email", help="Target canonical brand email.")
+    a2p_pf.add_argument("--phone", help="Target LC Phone number in E.164 format (non-555).")
+    a2p_pf.add_argument("--current-name", help="Current GHL location name override.")
+    a2p_pf.add_argument("--current-website", help="Current GHL location website override.")
+    a2p_pf.add_argument("--current-email", help="Current GHL location email override.")
+    a2p_pf.add_argument("--current-phone", help="Current GHL location phone override.")
+    a2p_pf.add_argument("--location-profile-json", help="JSON string or file path containing current GHL location profile.")
+    a2p_pf.add_argument("--live-location", action="store_true", help="Fetch current GHL location profile via live API/backend.")
+    a2p_pf.add_argument("--dom-json", help="JSON string or file path mapping root/privacy/terms keys to HTML strings for offline DOM auditing.")
+    a2p_pf.add_argument("--skip-http", action="store_true", help="Skip live HTTP probing and run offline checks only.")
+    a2p_pf.add_argument("--company-id", help="Optional GoHighLevel company ID override for live location lookup.")
+
+    a2p_pack = sub.add_parser(
+        "a2p-campaign-pack",
+        help="Generate a complete, copy-paste and API-ready A2P 10DLC Campaign Registration JSON/Markdown bundle.",
+    )
+    a2p_pack.add_argument("--location-id", help="Target GoHighLevel location ID.")
+    a2p_pack.add_argument("--brand-name", required=True, help="Target public brand name.")
+    a2p_pack.add_argument("--legal-name", help="Registered legal entity name (defaults to --brand-name).")
+    a2p_pack.add_argument("--website", required=True, help="Canonical live website root URL.")
+    a2p_pack.add_argument("--email", required=True, help="Canonical support/dispatch email on the website domain.")
+    a2p_pack.add_argument("--phone", help="Provisioned LC Phone number in E.164 format.")
+    a2p_pack.add_argument("--address", help="Street address.")
+    a2p_pack.add_argument("--city", help="City.")
+    a2p_pack.add_argument("--state", help="State or province code.")
+    a2p_pack.add_argument("--postal-code", help="Postal/ZIP code.")
+    a2p_pack.add_argument("--country", default="US", help="2-letter ISO country code.")
+    a2p_pack.add_argument("--timezone", default="America/Chicago", help="IANA timezone.")
+    a2p_pack.add_argument("--use-case", default="LOW_VOLUME_MIXED", help="TCR campaign use case.")
+    a2p_pack.add_argument("--vertical", default="CONSTRUCTION_MATERIALS", help="TCR business vertical.")
+    a2p_pack.add_argument("--form-url", help="Full public URL where the SMS opt-in form is hosted.")
+    a2p_pack.add_argument("--form-selector", default="form#quoteForm input#tcpaConsent", help="DOM selector for the opt-in form and checkbox.")
+    a2p_pack.add_argument("--privacy-url", help="Full URL to the Privacy Policy page.")
+    a2p_pack.add_argument("--terms-url", help="Full URL to the Terms of Service page.")
+    a2p_pack.add_argument("--service-summary", help="Summary of the transactional/estimating use case.")
+    a2p_pack.add_argument("--replace-from", help="Comma-separated legacy brand/domain strings to replace during GHL rebrand.")
+    a2p_pack.add_argument("--output-markdown", help="Optional file path to write the rendered Markdown registration dossier.")
+    a2p_pack.add_argument("--overwrite", action="store_true", help="Allow overwriting an existing --output-markdown file.")
+    a2p_pack.add_argument("--allow-protected-folder", action="store_true", help="Allow writing inside Windows Controlled Folder Access directories.")
+
+    a2p_tc_stat = sub.add_parser(
+        "a2p-trust-center-status",
+        help="Inspect live LC Phone sub-account, A2P Trust Center campaign draft, Persona KYC status, and available phone numbers.",
+    )
+    a2p_tc_stat.add_argument("--location-id", required=True, help="Target GoHighLevel location ID.")
+    a2p_tc_stat.add_argument("--area-code", help="Optional 3-digit US area code (e.g. 512) to preview available LC Phone local numbers.")
+    a2p_tc_stat.add_argument("--company-id", help="Optional GoHighLevel company ID override.")
+
+    a2p_tc_stage = sub.add_parser(
+        "a2p-trust-center-stage",
+        help="Preview or apply enabling LC Phone and staging all GHL A2P 10DLC Trust Center fields (Business Profile, EIN, Authorized Rep, and Campaign Draft).",
+    )
+    a2p_tc_stage.add_argument("--location-id", required=True, help="Target GoHighLevel location ID.")
+    a2p_tc_stage.add_argument("--brand-name", required=True, help="Public DBA / brand name.")
+    a2p_tc_stage.add_argument("--legal-name", required=True, help="IRS-registered legal entity name (e.g. Example Concrete LLC).")
+    a2p_tc_stage.add_argument("--ein", required=True, help="9-digit US EIN (e.g. 12-3456789).")
+    a2p_tc_stage.add_argument("--website", required=True, help="Canonical live website root URL.")
+    a2p_tc_stage.add_argument("--email", required=True, help="Canonical business email on the website domain.")
+    a2p_tc_stage.add_argument("--phone", required=True, help="Valid E.164 business phone number.")
+    a2p_tc_stage.add_argument("--address", required=True, help="IRS-registered street address.")
+    a2p_tc_stage.add_argument("--city", required=True, help="IRS-registered city.")
+    a2p_tc_stage.add_argument("--state", required=True, help="IRS-registered state code.")
+    a2p_tc_stage.add_argument("--postal-code", required=True, help="IRS-registered postal/ZIP code.")
+    a2p_tc_stage.add_argument("--country", default="US", help="2-letter ISO country code.")
+    a2p_tc_stage.add_argument("--timezone", default="America/Chicago", help="IANA timezone.")
+    a2p_tc_stage.add_argument("--rep-first-name", required=True, help="Authorized representative first name.")
+    a2p_tc_stage.add_argument("--rep-last-name", required=True, help="Authorized representative last name.")
+    a2p_tc_stage.add_argument("--rep-email", required=True, help="Authorized representative email.")
+    a2p_tc_stage.add_argument("--rep-phone", required=True, help="Authorized representative E.164 phone number.")
+    a2p_tc_stage.add_argument("--rep-position", default="Executive", help="Authorized representative position.")
+    a2p_tc_stage.add_argument("--rep-title", default="CEO", help="Authorized representative job title.")
+    a2p_tc_stage.add_argument("--industry", default="CONSTRUCTION", help="Trust Center business industry.")
+    a2p_tc_stage.add_argument("--entity-type", default="Limited Liability Corporation", help="Trust Center legal entity type.")
+    a2p_tc_stage.add_argument("--company-id", help="Optional GoHighLevel company ID override.")
+    a2p_tc_stage.add_argument("--apply", action="store_true")
+    a2p_tc_stage.add_argument("--confirm-plan", help="SHA-256 from the reviewed preview.")
+
     return p
+
+
+def _load_json_or_path(raw: str | None, *, expect_type: type = dict):
+    if not raw:
+        return {} if expect_type is dict else []
+    text = raw.strip()
+    if not text.startswith(("{", "[")):
+        p = Path(text).expanduser()
+        _reject_symlink_chain(p)
+        if p.is_file():
+            if p.stat().st_size > MAX_CONFIG_BYTES:
+                raise HighLevelError(f"JSON input file exceeds 1 MB limit: {p}")
+            text = p.read_text(encoding="utf-8")
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise HighLevelError("Expected valid JSON input.") from exc
+    if not isinstance(data, expect_type):
+        expected_label = "JSON array" if expect_type is list else "JSON object"
+        raise HighLevelError(f"Expected a {expected_label}.")
+    return data
+
+
+def _resolve_secret_input(
+    raw_arg: str | None,
+    *,
+    flag_name: str,
+    file_path: str | None = None,
+    use_stdin: bool = False,
+    env_var: str | None = None,
+    required: bool = False,
+) -> str | None:
+    """Resolve a secret from @file, --*-file, --*-stdin, or environment while rejecting raw argv literals (CWE-214)."""
+    if raw_arg is not None:
+        cleaned = raw_arg.strip()
+        if not cleaned.startswith("@"):
+            raise HighLevelError(
+                f"Refusing raw secret on {flag_name} (CWE-214). Pass {flag_name} @<path>, a file/stdin flag, or set {env_var or 'the secret'} in the environment."
+            )
+        p = Path(cleaned[1:]).expanduser()
+        _reject_symlink_chain(p)
+        if not p.is_file():
+            raise HighLevelError(f"Secret file not found: {p}")
+        if p.stat().st_size > MAX_CONFIG_BYTES:
+            raise HighLevelError("Secret file exceeds size limit.")
+        return p.read_text(encoding="utf-8").strip()
+    if file_path:
+        p = Path(file_path).expanduser()
+        _reject_symlink_chain(p)
+        if not p.is_file():
+            raise HighLevelError(f"Secret file not found: {p}")
+        if p.stat().st_size > MAX_CONFIG_BYTES:
+            raise HighLevelError("Secret file exceeds size limit.")
+        return p.read_text(encoding="utf-8").strip()
+    if use_stdin:
+        return sys.stdin.read().strip()
+    if env_var:
+        env_val = (os.environ.get(env_var) or "").strip()
+        if env_val:
+            return env_val
+    if required:
+        raise HighLevelError(
+            f"Missing secret for {flag_name}; set {env_var or 'the secret'} in the environment or pass {flag_name} @<path>."
+        )
+    return None
 
 
 def _parse_replace_pairs(replace_from: str | None, replace_to: str | None) -> list[tuple[str, str]]:
@@ -829,10 +996,18 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
         cfg.pop("_resolved_token", None)
         return cfg
     if args.command == "subaccount-profile-set":
+        resolved_pit = _resolve_secret_input(
+            args.pit,
+            flag_name="--pit",
+            file_path=getattr(args, "pit_file", None),
+            use_stdin=bool(getattr(args, "pit_stdin", False)),
+            env_var="GHL_PIT",
+            required=True,
+        )
         return save_subaccount_profile(
             profile=args.profile_name,
             location_id=args.location_id,
-            pit=args.pit,
+            pit=str(resolved_pit),
             name=args.name,
             set_default=bool(args.set_default),
         )
@@ -849,12 +1024,8 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
             location_id=args.location_id,
         )
     if args.command == "scope-audit":
-        cur = json.loads(args.current_scopes_json) if args.current_scopes_json else None
-        creator = json.loads(args.creator_scopes_json) if args.creator_scopes_json else None
-        if cur is not None and not isinstance(cur, list):
-            raise HighLevelError("--current-scopes-json must be a JSON array.")
-        if creator is not None and not isinstance(creator, list):
-            raise HighLevelError("--creator-scopes-json must be a JSON array.")
+        cur = _load_json_or_path(args.current_scopes_json, expect_type=list) if args.current_scopes_json else None
+        creator = _load_json_or_path(args.creator_scopes_json, expect_type=list) if args.creator_scopes_json else None
         return scope_audit(
             role=args.role,
             account_type=args.account_type,
@@ -864,14 +1035,94 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
     if args.command == "smtp-audit":
         return smtp_audit(company_id=args.company_id, location_id=args.location_id)
     if args.command == "dashboard-audit":
-        cur_perms = json.loads(args.current_permissions_json) if args.current_permissions_json else None
-        if cur_perms is not None and not isinstance(cur_perms, list):
-            raise HighLevelError("--current-permissions-json must be a JSON array.")
+        cur_perms = (
+            _load_json_or_path(args.current_permissions_json, expect_type=list)
+            if args.current_permissions_json
+            else None
+        )
         return dashboard_permission_audit(
             location_id=args.location_id,
             dashboard_id=args.dashboard_id,
             current_permissions=cur_perms,
         )
+    if args.command == "a2p-preflight":
+        profile_data: dict = {}
+        if args.location_profile_json:
+            profile_data.update(_load_json_or_path(args.location_profile_json))
+        if args.live_location:
+            if args.location_id and args.company_id:
+                backend = backend_factory(company_id=args.company_id)
+                loc_resp = backend.request("GET", f"/locations/{valid_id(args.location_id)}")
+            elif args.location_id:
+                try:
+                    backend = backend_factory(company_id=args.company_id)
+                    loc_resp = backend.request("GET", f"/locations/{valid_id(args.location_id)}")
+                except HighLevelError:
+                    client = client_factory(location_id=args.location_id, profile=getattr(args, "profile", None))
+                    loc_resp = client.request("GET", f"/locations/{client.location_id}")
+            else:
+                client = client_factory(profile=getattr(args, "profile", None))
+                loc_resp = client.request("GET", f"/locations/{client.location_id}")
+            loc_inner = loc_resp.get("location") if isinstance(loc_resp.get("location"), dict) else loc_resp
+            if isinstance(loc_inner, dict):
+                profile_data.update(loc_inner)
+        if args.current_name is not None:
+            profile_data["name"] = args.current_name
+        if args.current_website is not None:
+            profile_data["website"] = args.current_website
+        if args.current_email is not None:
+            profile_data["email"] = args.current_email
+        if args.current_phone is not None:
+            profile_data["phone"] = args.current_phone
+        dom_map = _load_json_or_path(args.dom_json) if args.dom_json else None
+        return a2p_preflight(
+            brand_name=args.brand_name,
+            website=args.website,
+            email=args.email,
+            phone=args.phone,
+            location_id=args.location_id,
+            legal_name=args.legal_name,
+            current_profile=profile_data if profile_data else None,
+            dom_fixtures=dom_map,
+            skip_http=bool(args.skip_http),
+        )
+    if args.command == "a2p-campaign-pack":
+        replace_from_list = (
+            [x.strip() for x in args.replace_from.split(",") if x.strip()]
+            if args.replace_from
+            else None
+        )
+        res = a2p_campaign_pack(
+            brand_name=args.brand_name,
+            website=args.website,
+            email=args.email,
+            phone=args.phone,
+            location_id=args.location_id,
+            legal_name=args.legal_name,
+            address=args.address,
+            city=args.city,
+            state=args.state,
+            postal_code=args.postal_code,
+            country=args.country,
+            timezone=args.timezone,
+            use_case=args.use_case,
+            vertical=args.vertical,
+            form_url=args.form_url,
+            form_selector=args.form_selector,
+            privacy_url=args.privacy_url,
+            terms_url=args.terms_url,
+            service_summary=args.service_summary,
+            old_brand_terms=replace_from_list,
+        )
+        if args.output_markdown:
+            out_path = _safe_write_text(
+                Path(args.output_markdown),
+                res["markdown"],
+                overwrite=bool(getattr(args, "overwrite", False)),
+                allow_protected_folder=bool(getattr(args, "allow_protected_folder", False)),
+            )
+            res["output_markdown_path"] = str(out_path)
+        return res
 
     if args.command == "profiles-matrix":
         prof_list = [x.strip() for x in args.profiles.split(",") if x.strip()] if args.profiles else None
@@ -912,6 +1163,8 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
         "snapshot-refresh",
         "snapshot-push",
         "snapshot-share-link",
+        "a2p-trust-center-status",
+        "a2p-trust-center-stage",
     }:
         if args.command == "location-rename":
             has_conf = bool(args.confirm_location or args.confirm_plan)
@@ -942,6 +1195,7 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
             "snapshot-refresh",
             "snapshot-push",
             "snapshot-share-link",
+            "a2p-trust-center-stage",
         }:
             if args.apply and not args.confirm_plan:
                 raise HighLevelError("--apply requires --confirm-plan.")
@@ -1253,7 +1507,6 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
                 backend,
                 plan,
                 confirm_plan=args.confirm_plan,
-                reveal_token=bool(args.reveal_token),
             )
         if args.command == "pit-delete":
             plan = make_pit_delete_plan(
@@ -1316,9 +1569,12 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
             )
         if args.command == "location-rebrand":
             pairs = _parse_replace_pairs(args.replace_from, args.replace_to)
-            cv_map = json.loads(args.custom_values_json) if args.custom_values_json else None
-            if cv_map is not None and not isinstance(cv_map, dict):
-                raise HighLevelError("--custom-values-json must be a JSON object.")
+            cv_map = _load_json_or_path(args.custom_values_json, expect_type=dict) if args.custom_values_json else None
+            wf_capi = _resolve_secret_input(
+                args.workflow_capi_token,
+                flag_name="--workflow-capi-token",
+                env_var="META_CAPI_ACCESS_TOKEN",
+            )
             plan = make_location_rebrand_plan(
                 backend,
                 location_id=args.location_id,
@@ -1340,7 +1596,7 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
                 workflow_from_name=args.workflow_from_name,
                 workflow_from_email=args.workflow_from_email,
                 workflow_pixel_id=args.workflow_pixel_id,
-                workflow_capi_token=args.workflow_capi_token,
+                workflow_capi_token=wf_capi,
             )
             if not args.apply:
                 return {"mode": "preview", "plan": plan, "writes_sent": 0}
@@ -1368,6 +1624,11 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
                 if args.workflow_ids
                 else None
             )
+            capi_tok = _resolve_secret_input(
+                args.capi_access_token,
+                flag_name="--capi-access-token",
+                env_var="META_CAPI_ACCESS_TOKEN",
+            )
             plan = make_workflow_steps_rebrand_plan(
                 backend,
                 location_id=args.location_id,
@@ -1376,7 +1637,7 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
                 from_name=args.from_name,
                 from_email=args.from_email,
                 pixel_id=args.pixel_id,
-                capi_access_token=args.capi_access_token,
+                capi_access_token=capi_tok,
                 templatize_senders=bool(args.templatize_senders),
             )
             if not args.apply:
@@ -1398,6 +1659,45 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
             if not args.apply:
                 return {"mode": "preview", "plan": plan, "writes_sent": 0}
             return apply_snapshot_share_link_plan(
+                backend,
+                plan,
+                confirm_plan=args.confirm_plan,
+            )
+        if args.command == "a2p-trust-center-status":
+            return inspect_a2p_trust_center_status(
+                backend,
+                location_id=args.location_id,
+                area_code=args.area_code,
+            )
+        if args.command == "a2p-trust-center-stage":
+            plan = make_a2p_trust_center_stage_plan(
+                backend,
+                location_id=args.location_id,
+                brand_name=args.brand_name,
+                legal_name=args.legal_name,
+                ein=args.ein,
+                website=args.website,
+                email=args.email,
+                phone=args.phone,
+                address=args.address,
+                city=args.city,
+                state=args.state,
+                postal_code=args.postal_code,
+                country=args.country,
+                timezone=args.timezone,
+                rep_first_name=args.rep_first_name,
+                rep_last_name=args.rep_last_name,
+                rep_email=args.rep_email,
+                rep_phone=args.rep_phone,
+                rep_position=args.rep_position,
+                rep_title=args.rep_title,
+                industry=args.industry,
+                entity_type=args.entity_type,
+                company_id=args.company_id,
+            )
+            if not args.apply:
+                return {"mode": "preview", "plan": plan, "writes_sent": 0}
+            return apply_a2p_trust_center_stage_plan(
                 backend,
                 plan,
                 confirm_plan=args.confirm_plan,
@@ -1468,9 +1768,7 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
         )
     if args.command == "subaccount-rebrand":
         pairs = _parse_replace_pairs(args.replace_from, args.replace_to)
-        cv_map = json.loads(args.custom_values_json) if args.custom_values_json else None
-        if cv_map is not None and not isinstance(cv_map, dict):
-            raise HighLevelError("--custom-values-json must be a JSON object.")
+        cv_map = _load_json_or_path(args.custom_values_json, expect_type=dict) if args.custom_values_json else None
         sr_plan = make_subaccount_rebrand_plan(
             client,
             name=args.name,
@@ -1697,9 +1995,7 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
     if args.command == "workflow-logs":
         return list_workflow_logs(client, workflow_id=args.workflow_id, limit=args.limit)
     if args.command == "workflow-validate":
-        defn = json.loads(args.definition_json)
-        if not isinstance(defn, dict):
-            raise HighLevelError("--definition-json must be a JSON object.")
+        defn = _load_json_or_path(args.definition_json, expect_type=dict)
         return validate_workflow_definition(client, definition=defn)
     if args.command == "workflow-status":
         wf_plan = make_workflow_status_plan(
@@ -1740,11 +2036,18 @@ def execute(args, client_factory=Client, backend_factory=BackendClient) -> dict:
             "jobs": bridge.list_jobs(),
         }
     if args.command == "x-bridge-sync":
+        if args.apply and not getattr(args, "confirm_plan", None):
+            raise HighLevelError("--apply requires --confirm-plan from the reviewed x-bridge-sync preview.")
+        if getattr(args, "confirm_plan", None) and not args.apply:
+            raise HighLevelError("--confirm-plan requires --apply.")
         bridge = GhlXBridge()
-        local_override = Path(args.local_media) if getattr(args, "local_media", None) else None
+        local_override = Path(args.local_media).expanduser() if getattr(args, "local_media", None) else None
+        if local_override is not None:
+            _reject_symlink_chain(local_override)
         return bridge.sync(
             client,
             apply=bool(args.apply),
+            confirm_plan=getattr(args, "confirm_plan", None),
             cutoff_iso=args.cutoff_iso,
             reuse_media_id=getattr(args, "reuse_media_id", None),
             local_media_override=local_override,

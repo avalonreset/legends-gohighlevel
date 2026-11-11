@@ -6,7 +6,9 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -132,6 +134,10 @@ ALLOWED_BACKEND_PATHS = (
     re.compile(r"/email-isv/feature/domain(?:/(?:list|verify|set-default|v2/add-domain|[A-Za-z0-9._-]{2,120}|set-default-headers/[A-Za-z0-9._-]{2,120}|unset-default-headers/[A-Za-z0-9._-]{2,120}))?\Z"),
     re.compile(r"/email-isv/provider/mailgun(?:/(?:locations|domains|forwarding-address-settings|reply-address-settings))?\Z"),
     re.compile(r"/conversations/providers/mailgun(?:/(?:fetch|fetch/domain|validations))?\Z"),
+    re.compile(r"/conversations/providers/twilio(?:/(?:fetch|setup/subaccount))?\Z"),
+    re.compile(r"/phone-system/twilio-accounts\Z"),
+    re.compile(r"/phone-system/numbers/location/[A-Za-z0-9_-]{8,64}(?:/available)?\Z"),
+    re.compile(r"/phone-system/kyc-verification/compliance-check\Z"),
     re.compile(r"/saas-billing-v2/billing-config/LOCATION/[A-Za-z0-9_-]{8,64}\Z"),
     re.compile(r"/saas-billing-v2/billing-config/group/[A-Za-z0-9_-]{8,64}/[A-Za-z0-9_,-]{3,400}\Z"),
     re.compile(r"/saas_service/saas-config/[A-Za-z0-9_-]{8,64}/(?:update-(?:twilio|mailgun)-rebilling|enable-saas)\Z"),
@@ -177,6 +183,8 @@ ALLOWED_BACKEND_WRITE_PATHS = (
     re.compile(r"/email-isv/feature/domain(?:/(?:verify|set-default|v2/add-domain|[A-Za-z0-9._-]{2,120}|set-default-headers/[A-Za-z0-9._-]{2,120}|unset-default-headers/[A-Za-z0-9._-]{2,120}))?\Z"),
     re.compile(r"/email-isv/provider/mailgun(?:/(?:locations|domains|forwarding-address-settings|reply-address-settings))?\Z"),
     re.compile(r"/conversations/providers/mailgun(?:/validations)?\Z"),
+    re.compile(r"/conversations/providers/twilio/setup/subaccount\Z"),
+    re.compile(r"/phone-system/twilio-accounts\Z"),
     re.compile(r"/saas-billing-v2/billing-config/group/[A-Za-z0-9_-]{8,64}/[A-Za-z0-9_,-]{3,400}\Z"),
     re.compile(r"/saas_service/saas-config/[A-Za-z0-9_-]{8,64}/(?:update-(?:twilio|mailgun)-rebilling|enable-saas)\Z"),
     re.compile(r"/saas-api/saas-config/allow-attach-rebilling/[A-Za-z0-9_-]{8,64}\Z"),
@@ -294,15 +302,76 @@ def scrub_secrets(text: str) -> str:
 
 
 def _reject_symlink_chain(path: Path) -> None:
-    """Refuse symlinked config files or parent directories (allowing macOS system root links)."""
+    """Refuse symlinked config files or parent directories (allowing macOS system root links on darwin only)."""
     for candidate in (path, *path.parents):
-        if candidate in _MACOS_SYSTEM_SYMLINKS:
+        if sys.platform == "darwin" and candidate in _MACOS_SYSTEM_SYMLINKS:
             continue
         try:
             if candidate.is_symlink():
-                raise HighLevelError("Refusing to read or write symlinked configuration path.")
+                raise HighLevelError("Refusing to read or write symlinked path.")
         except OSError as exc:
-            raise HighLevelError("Unable to inspect configuration path safety.") from exc
+            raise HighLevelError("Unable to inspect path safety.") from exc
+
+
+def _reject_controlled_folder_access(path: Path, *, allow_protected_folder: bool = False) -> None:
+    """Block unapproved writes into Windows Controlled Folder Access directories (Desktop/Documents/Pictures/Videos/Music)."""
+    if allow_protected_folder:
+        return
+    expanded = path.expanduser()
+    home = Path.home()
+    protected_names = {"desktop", "documents", "pictures", "videos", "music", "favorites"}
+    try:
+        rel = expanded.resolve(strict=False).relative_to(home.resolve(strict=False))
+        parts = [p.lower() for p in rel.parts]
+        if parts and (
+            parts[0] in protected_names
+            or (len(parts) >= 2 and parts[0] == "onedrive" and parts[1] in protected_names)
+        ):
+            raise HighLevelError(
+                f"Refusing to write inside Controlled Folder Access directory ({parts[0]}); pass --allow-protected-folder or choose a workspace/temp path."
+            )
+    except ValueError:
+        pass
+
+
+def _safe_write_text(
+    path: Path,
+    content: str,
+    *,
+    overwrite: bool = False,
+    allow_protected_folder: bool = False,
+    mode: int | None = None,
+) -> Path:
+    """Atomically write UTF-8 text after rejecting symlinks, existing files (unless overwrite=True), and CFA folders."""
+    expanded = path.expanduser()
+    _reject_symlink_chain(expanded)
+    _reject_controlled_folder_access(expanded, allow_protected_folder=allow_protected_folder)
+    if expanded.exists() and not overwrite:
+        raise HighLevelError(f"Output file already exists ({expanded}); pass --overwrite to replace it.")
+    expanded.parent.mkdir(parents=True, exist_ok=True)
+    _reject_symlink_chain(expanded.parent)
+    tmp_path = expanded.with_name(f".{expanded.name}.tmp.{os.getpid()}")
+    _reject_symlink_chain(tmp_path)
+    try:
+        tmp_path.write_text(content, encoding="utf-8")
+        if mode is not None:
+            try:
+                os.chmod(tmp_path, mode)
+            except OSError:
+                pass
+        tmp_path.replace(expanded)
+        if mode is not None:
+            try:
+                os.chmod(expanded, mode)
+            except OSError:
+                pass
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+    return expanded
 
 
 def subaccount_config_path() -> Path:
@@ -557,6 +626,14 @@ def _jwt_payload(token: str | None) -> dict[str, Any]:
         return {}
 
 
+def _ssh_binary() -> str:
+    if os.name == "nt":
+        git_ssh = Path(r"C:\Program Files\Git\usr\bin\ssh.exe")
+        if git_ssh.is_file():
+            return str(git_ssh)
+    return "ssh"
+
+
 def extract_worker_token_via_ssh(
     *,
     worker_ssh: str,
@@ -574,12 +651,16 @@ def extract_worker_token_via_ssh(
     if clean_user and not ID_RE.fullmatch(clean_user):
         raise HighLevelError("Invalid worker user ID format.")
 
-    remote_cmd = f"docker exec -i -e GHL_TARGET_USER_ID={clean_user} {clean_container} node -"
+    remote_cmd = (
+        f"docker exec -i -e GHL_TARGET_USER_ID={shlex.quote(clean_user)} "
+        f"{shlex.quote(clean_container)} node -"
+    )
+    ssh_bin = _ssh_binary()
 
     def _run_extract() -> subprocess.CompletedProcess[str]:
         try:
             return subprocess.run(
-                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", clean_ssh, remote_cmd],
+                [ssh_bin, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", clean_ssh, remote_cmd],
                 input=_WORKER_INDEXEDDB_SCRIPT,
                 text=True,
                 capture_output=True,
@@ -604,11 +685,12 @@ def extract_worker_token_via_ssh(
         try:
             subprocess.run(
                 [
-                    "ssh",
+                    ssh_bin,
                     "-o",
                     "BatchMode=yes",
                     "-o",
                     "ConnectTimeout=10",
+                    "--",
                     clean_ssh,
                     "curl -fsS --max-time 15 http://127.0.0.1:18901/health >/dev/null 2>&1 || true",
                 ],

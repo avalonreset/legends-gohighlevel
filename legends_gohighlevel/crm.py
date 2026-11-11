@@ -2177,28 +2177,38 @@ def apply_subaccount_rebrand_plan(
     if confirm_plan != plan.get("sha256"):
         raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
 
-    prof_up = plan.get("business_profile_update")
-    if isinstance(prof_up, dict) and isinstance(prof_up.get("request"), dict):
-        req = prof_up["request"]
-        client.request(req["method"], req["path"], body=req["payload"])
-
+    completed_steps: list[str] = []
     cv_results = []
-    for item in plan.get("custom_value_mutations", []):
-        req = item["request"]
-        client.request(req["method"], req["path"], body=req["payload"])
-        cv_results.append({"name": item["name"], "action": item["action"], "after_value": item["after_value"]})
-
     link_results = []
-    for item in plan.get("trigger_link_mutations", []):
-        req = item["request"]
-        client.request(req["method"], req["path"], body=req["payload"])
-        link_results.append({"id": item["id"], "after_name": item["after_name"], "after_redirect_to": item["after_redirect_to"]})
-
     cal_results = []
-    for item in plan.get("calendar_mutations", []):
-        req = item["request"]
-        client.request(req["method"], req["path"], body=req["payload"])
-        cal_results.append({"id": item["id"], "after_name": item["after_name"]})
+    try:
+        prof_up = plan.get("business_profile_update")
+        if isinstance(prof_up, dict) and isinstance(prof_up.get("request"), dict):
+            req = prof_up["request"]
+            client.request(req["method"], req["path"], body=req["payload"])
+            completed_steps.append(f"business_profile:{client.location_id}")
+
+        for item in plan.get("custom_value_mutations", []):
+            req = item["request"]
+            client.request(req["method"], req["path"], body=req["payload"])
+            cv_results.append({"name": item["name"], "action": item["action"], "after_value": item["after_value"]})
+            completed_steps.append(f"custom_value:{item['name']}")
+
+        for item in plan.get("trigger_link_mutations", []):
+            req = item["request"]
+            client.request(req["method"], req["path"], body=req["payload"])
+            link_results.append({"id": item["id"], "after_name": item["after_name"], "after_redirect_to": item["after_redirect_to"]})
+            completed_steps.append(f"trigger_link:{item['id']}")
+
+        for item in plan.get("calendar_mutations", []):
+            req = item["request"]
+            client.request(req["method"], req["path"], body=req["payload"])
+            cal_results.append({"id": item["id"], "after_name": item["after_name"]})
+            completed_steps.append(f"calendar:{item['id']}")
+    except HighLevelError as exc:
+        err = HighLevelError(f"{exc} (completed_steps={completed_steps})")
+        err.completed_steps = list(completed_steps)  # type: ignore[attr-defined]
+        raise err from None
 
     after_loc = location_snapshot(client)["location"]
     return {

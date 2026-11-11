@@ -120,7 +120,7 @@ Sub-account managers operating multiple client or test locations via Official AP
 
 ```sh
 # Manage named sub-account profiles
-legends-gohighlevel subaccount-profile-set --profile-name client-a --location-id LOCATION_ID --pit pit-xxxx --set-default
+legends-gohighlevel subaccount-profile-set --profile-name client-a --location-id LOCATION_ID --pit @/path/to/pit.txt --set-default
 legends-gohighlevel subaccount-profile-use --profile-name client-a
 legends-gohighlevel subaccount-profile-delete --profile-name old-profile
 legends-gohighlevel profiles-matrix

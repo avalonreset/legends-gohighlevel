@@ -16,6 +16,7 @@ from .governance import (
     SAAS_BILLING_V2_KEYS,
     UNNERFED_LOCATION_PERMISSIONS,
     UNNERFED_V1_PERMISSIONS,
+    a2p_campaign_pack,
     markup_to_multiplier,
 )
 
@@ -1148,14 +1149,18 @@ def make_rebilling_sync_plan(
         effective_saas_mode = "setup_pending" if will_enable_hold else saas_mode
         active_flag = effective_saas_mode == "activated"
         v2_enabled_flag = effective_saas_mode in {"activated", "setup_pending"}
-        loc_email = "support@rankyrank.com"
+        loc_email = str(item.get("email") or "").strip()
         if will_enable_hold:
             try:
                 loc_doc = backend.request("GET", f"/locations/{lid}")
                 loc_obj = loc_doc.get("location", loc_doc) if isinstance(loc_doc, dict) else {}
-                loc_email = str(loc_obj.get("email") or "support@rankyrank.com").strip()
+                loc_email = str(loc_obj.get("email") or loc_email).strip()
             except HighLevelError:
                 pass
+            if not loc_email:
+                raise HighLevelError(
+                    f"Location {lid} has no business email set; configure location email before enabling SaaS hold."
+                )
         targets.append(
             {
                 "location_id": lid,
@@ -2644,7 +2649,6 @@ def apply_pit_create_plan(
     plan: dict[str, Any],
     *,
     confirm_plan: str,
-    reveal_token: bool = False,
 ) -> dict[str, Any]:
     if confirm_plan != plan.get("sha256"):
         raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
@@ -2677,8 +2681,6 @@ def apply_pit_create_plan(
         "profile_saved": profile_saved,
         "verified": bool(pid and raw_tok),
     }
-    if reveal_token:
-        out["token"] = raw_tok
     return out
 
 
@@ -2756,12 +2758,16 @@ def make_location_create_plan(
         if isinstance(src_obj, dict):
             src_loc = src_obj
 
+    clean_email = (email or src_loc.get("email") or "").strip()
+    if not clean_email or "@" not in clean_email:
+        raise HighLevelError("Sub-account --email is required (or inherit via --from-location-id).")
+
     payload: dict[str, Any] = {
         "companyId": cid,
         "name": clean_name,
         "country": (country or src_loc.get("country") or "US").strip(),
         "timezone": (timezone or src_loc.get("timezone") or "America/New_York").strip(),
-        "email": (email or src_loc.get("email") or "support@rankyrank.com").strip(),
+        "email": clean_email,
         "phone": (phone or src_loc.get("phone") or "").strip(),
         "address": (address or src_loc.get("address") or "Main Street 1").strip(),
         "city": (city or src_loc.get("city") or "New York").strip(),
@@ -3239,40 +3245,51 @@ def apply_location_rebrand_plan(
         raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
 
     lid = valid_id(plan["location_id"])
-    prof_up = plan.get("business_profile_update")
-    if isinstance(prof_up, dict) and isinstance(prof_up.get("request"), dict):
-        req = prof_up["request"]
-        backend.request(req["method"], req["path"], body=req["payload"])
-
+    completed_steps: list[str] = []
     cv_results = []
-    for item in plan.get("custom_value_mutations", []):
-        req = item["request"]
-        backend.request(req["method"], req["path"], body=req["payload"])
-        cv_results.append({"name": item["name"], "action": item["action"], "after_value": item["after_value"]})
-
     link_results = []
-    for item in plan.get("trigger_link_mutations", []):
-        req = item["request"]
-        backend.request(req["method"], req["path"], body=req["payload"])
-        link_results.append({"id": item["id"], "after_name": item["after_name"], "after_redirect_to": item["after_redirect_to"]})
-
     cal_results = []
-    for item in plan.get("calendar_mutations", []):
-        req = item["request"]
-        backend.request(req["method"], req["path"], body=req["payload"])
-        cal_results.append({"id": item["id"], "after_name": item["after_name"]})
-
     wf_results = []
-    for item in plan.get("workflow_step_mutations", []):
-        req = item["request"]
-        backend.request(req["method"], req["path"], body=req["payload"])
-        wf_results.append(
-            {
-                "workflow_id": item["workflow_id"],
-                "workflow_name": item["workflow_name"],
-                "changed_step_count": len(item.get("step_changes", [])),
-            }
-        )
+    try:
+        prof_up = plan.get("business_profile_update")
+        if isinstance(prof_up, dict) and isinstance(prof_up.get("request"), dict):
+            req = prof_up["request"]
+            backend.request(req["method"], req["path"], body=req["payload"])
+            completed_steps.append(f"business_profile:{lid}")
+
+        for item in plan.get("custom_value_mutations", []):
+            req = item["request"]
+            backend.request(req["method"], req["path"], body=req["payload"])
+            cv_results.append({"name": item["name"], "action": item["action"], "after_value": item["after_value"]})
+            completed_steps.append(f"custom_value:{item['name']}")
+
+        for item in plan.get("trigger_link_mutations", []):
+            req = item["request"]
+            backend.request(req["method"], req["path"], body=req["payload"])
+            link_results.append({"id": item["id"], "after_name": item["after_name"], "after_redirect_to": item["after_redirect_to"]})
+            completed_steps.append(f"trigger_link:{item['id']}")
+
+        for item in plan.get("calendar_mutations", []):
+            req = item["request"]
+            backend.request(req["method"], req["path"], body=req["payload"])
+            cal_results.append({"id": item["id"], "after_name": item["after_name"]})
+            completed_steps.append(f"calendar:{item['id']}")
+
+        for item in plan.get("workflow_step_mutations", []):
+            req = item["request"]
+            backend.request(req["method"], req["path"], body=req["payload"])
+            wf_results.append(
+                {
+                    "workflow_id": item["workflow_id"],
+                    "workflow_name": item["workflow_name"],
+                    "changed_step_count": len(item.get("step_changes", [])),
+                }
+            )
+            completed_steps.append(f"workflow:{item['workflow_id']}")
+    except HighLevelError as exc:
+        err = HighLevelError(f"{exc} (completed_steps={completed_steps})")
+        err.completed_steps = list(completed_steps)  # type: ignore[attr-defined]
+        raise err from None
 
     after_res = backend.request("GET", f"/locations/{lid}")
     after_loc = after_res.get("location", after_res) if isinstance(after_res, dict) else {}
@@ -3782,4 +3799,450 @@ def apply_snapshot_share_link_plan(
         "verified": True,
         "response": res,
     }
+
+
+def inspect_a2p_trust_center_status(
+    backend: BackendClient,
+    *,
+    location_id: str,
+    area_code: str | None = None,
+) -> dict[str, Any]:
+    """Inspect a sub-account's LC Phone / Twilio sub-account, A2P Trust Center draft, Persona KYC status, and phone numbers."""
+    lid = valid_id(location_id)
+    loc_doc = backend.request("GET", f"/locations/{lid}")
+    loc = loc_doc.get("location", loc_doc) if isinstance(loc_doc, dict) else {}
+
+    tw_account: dict[str, Any] = {}
+    try:
+        tw_res = backend.request(
+            "GET",
+            "/phone-system/twilio-accounts",
+            query={"entityId": lid, "entityType": "LOCATION"},
+        )
+        if isinstance(tw_res, dict):
+            tw_account = tw_res
+    except HighLevelError:
+        tw_account = {}
+
+    tw_fetch: dict[str, Any] = {}
+    try:
+        fetch_res = backend.request(
+            "GET",
+            "/conversations/providers/twilio/fetch",
+            query={"locationId": lid},
+        )
+        if isinstance(fetch_res, dict):
+            tw_fetch = fetch_res
+    except HighLevelError:
+        tw_fetch = {}
+
+    account_sid = str(
+        tw_fetch.get("accountSid")
+        or tw_account.get("accountSid")
+        or ""
+    ).strip()
+    tw_id = str(tw_account.get("id") or tw_fetch.get("id") or "").strip()
+    tw_sub_status = (
+        tw_account.get("twilioSubaccount", {}).get("status")
+        if isinstance(tw_account.get("twilioSubaccount"), dict)
+        else None
+    )
+    under_ghl = (
+        tw_fetch.get("underGhlAccount")
+        if tw_fetch.get("underGhlAccount") is not None
+        else tw_account.get("underGHLAccount")
+    )
+    lc_phone_provisioned = bool(account_sid or tw_id or tw_sub_status == "active")
+    campaign_details = (
+        tw_account.get("campaignDetails")
+        if isinstance(tw_account.get("campaignDetails"), dict)
+        else {}
+    )
+
+    numbers: list[dict[str, Any]] = []
+    if lc_phone_provisioned:
+        try:
+            num_res = backend.request(
+                "GET",
+                f"/phone-system/numbers/location/{lid}",
+                query={"pageSize": 10, "page": 1},
+            )
+            if isinstance(num_res, dict) and isinstance(num_res.get("numbers"), list):
+                numbers = num_res["numbers"]
+        except HighLevelError:
+            numbers = []
+
+    available_numbers: list[dict[str, Any]] = []
+    if lc_phone_provisioned and area_code and area_code.strip():
+        clean_area = re.sub(r"\D", "", area_code.strip())[:3]
+        if len(clean_area) == 3:
+            try:
+                avail_res = backend.request(
+                    "GET",
+                    f"/phone-system/numbers/location/{lid}/available",
+                    query={
+                        "countryCode": "US",
+                        "firstPart": clean_area,
+                        "smsEnabled": "true",
+                        "voiceEnabled": "true",
+                        "mmsEnabled": "true",
+                        "numberTypes": "local",
+                    },
+                )
+                if isinstance(avail_res, dict) and isinstance(avail_res.get("numbers"), list):
+                    available_numbers = [
+                        {
+                            "phoneNumber": n.get("phoneNumber"),
+                            "friendlyName": n.get("friendlyName"),
+                            "locality": n.get("locality"),
+                            "region": n.get("region"),
+                            "postalCode": n.get("postalCode"),
+                            "price": n.get("price"),
+                        }
+                        for n in avail_res["numbers"][:5]
+                        if isinstance(n, dict)
+                    ]
+            except HighLevelError:
+                available_numbers = []
+
+    kyc_status: dict[str, Any] = {}
+    try:
+        kyc_res = backend.request(
+            "GET",
+            "/phone-system/kyc-verification/compliance-check",
+            query={"entityId": lid, "entity": "LOCATION", "rawDataNeeded": "true"},
+        )
+        if isinstance(kyc_res, dict):
+            kyc_status = kyc_res
+    except HighLevelError:
+        kyc_status = {}
+
+    loc_meta: dict[str, Any] = {}
+    try:
+        meta_res = backend.request("GET", f"/saas-api/location-metadata/{lid}")
+        if isinstance(meta_res, dict) and isinstance(meta_res.get("data"), dict):
+            loc_meta = meta_res["data"]
+    except HighLevelError:
+        loc_meta = {}
+
+    saas_settings = (
+        loc.get("settings", {}).get("saasSettings", {})
+        if isinstance(loc.get("settings"), dict)
+        and isinstance(loc.get("settings", {}).get("saasSettings"), dict)
+        else {}
+    )
+    saas_mode = str(loc_meta.get("saasMode") or saas_settings.get("saasMode") or "not_activated")
+    payment_pending_reason = loc_meta.get("paymentPendingReason")
+    billing_unblocked = payment_pending_reason is None or saas_mode == "activated"
+
+    bi = loc.get("businessInformation") if isinstance(loc.get("businessInformation"), dict) else {}
+    rep = loc.get("authorizedRepresentative") if isinstance(loc.get("authorizedRepresentative"), dict) else {}
+
+    legal_name = str(loc.get("legalBusinessName") or "").strip()
+    ein = str(bi.get("registrationNumber") or "").strip()
+    address = str(loc.get("address") or "").strip()
+    city = str(loc.get("city") or "").strip()
+    state = str(loc.get("state") or "").strip()
+    postal_code = str(loc.get("postalCode") or "").strip()
+
+    business_profile_staged = bool(legal_name and ein and address and city and state and postal_code)
+    authorized_rep_staged = bool(
+        rep.get("firstName")
+        and rep.get("lastName")
+        and rep.get("email")
+        and rep.get("phoneNumber")
+    )
+    campaign_details_staged = bool(
+        campaign_details.get("useCase")
+        and campaign_details.get("useCaseDescription")
+        and isinstance(campaign_details.get("sampleMessages"), list)
+        and len(campaign_details.get("sampleMessages") or []) >= 2
+    )
+    persona_kyc_completed = bool(
+        kyc_status.get("isCompleted") is True or kyc_status.get("status") == "completed"
+    )
+    phone_number_provisioned = len(numbers) > 0
+
+    return {
+        "ok": bool(
+            lc_phone_provisioned
+            and business_profile_staged
+            and authorized_rep_staged
+            and campaign_details_staged
+        ),
+        "location_id": lid,
+        "location_name": loc.get("name"),
+        "lc_phone_subaccount": {
+            "provisioned": lc_phone_provisioned,
+            "id": tw_id or None,
+            "account_sid": account_sid or None,
+            "status": tw_sub_status,
+            "under_ghl_account": under_ghl,
+        },
+        "business_profile": {
+            "staged": business_profile_staged,
+            "legal_business_name": legal_name or None,
+            "ein": ein or None,
+            "registration_type": bi.get("registrationType"),
+            "industry": bi.get("industry"),
+            "entity_type": bi.get("type"),
+            "address": address or None,
+            "city": city or None,
+            "state": state or None,
+            "postal_code": postal_code or None,
+            "country": loc.get("country"),
+            "phone": loc.get("phone"),
+            "email": loc.get("email"),
+            "website": loc.get("website"),
+        },
+        "authorized_representative": {
+            "staged": authorized_rep_staged,
+            "first_name": rep.get("firstName"),
+            "last_name": rep.get("lastName"),
+            "email": rep.get("email"),
+            "phone_number": rep.get("phoneNumber"),
+            "position": rep.get("position"),
+            "title": rep.get("title"),
+        },
+        "campaign_draft": {
+            "staged": campaign_details_staged,
+            "use_case": campaign_details.get("useCase"),
+            "opt_in_method": campaign_details.get("optInMethod"),
+            "privacy_policy_url": campaign_details.get("privacyPolicyUrl"),
+            "terms_and_conditions_url": campaign_details.get("termsAndConditionsUrl"),
+            "sample_message_count": len(campaign_details.get("sampleMessages") or []),
+        },
+        "persona_kyc": {
+            "completed": persona_kyc_completed,
+            "status": kyc_status.get("status"),
+            "inquiry_id": kyc_status.get("inquiryId"),
+        },
+        "billing_mode": {
+            "saas_mode": saas_mode,
+            "payment_pending_reason": payment_pending_reason,
+            "agency_wallet_direct": saas_mode == "not_activated" and payment_pending_reason is None,
+            "unblocked": billing_unblocked,
+        },
+        "phone_numbers": {
+            "provisioned_count": len(numbers),
+            "numbers": [
+                {
+                    "phoneNumber": n.get("phoneNumber"),
+                    "friendlyName": n.get("friendlyName"),
+                }
+                for n in numbers
+                if isinstance(n, dict)
+            ],
+            "available_preview": available_numbers,
+        },
+        "gates": {
+            "lc_phone_subaccount_provisioned": lc_phone_provisioned,
+            "business_profile_staged": business_profile_staged,
+            "authorized_rep_staged": authorized_rep_staged,
+            "campaign_details_staged": campaign_details_staged,
+            "persona_kyc_completed": persona_kyc_completed,
+            "phone_number_provisioned": phone_number_provisioned,
+        },
+    }
+
+
+def make_a2p_trust_center_stage_plan(
+    backend: BackendClient,
+    *,
+    location_id: str,
+    brand_name: str,
+    legal_name: str,
+    ein: str,
+    website: str,
+    email: str,
+    phone: str,
+    address: str,
+    city: str,
+    state: str,
+    postal_code: str,
+    country: str = "US",
+    timezone: str = "America/Chicago",
+    rep_first_name: str,
+    rep_last_name: str,
+    rep_email: str,
+    rep_phone: str,
+    rep_position: str = "Executive",
+    rep_title: str = "CEO",
+    industry: str = "CONSTRUCTION",
+    entity_type: str = "Limited Liability Corporation",
+    company_id: str | None = None,
+) -> dict[str, Any]:
+    """Build a deterministic preview plan to enable LC Phone and pre-stage all GHL A2P 10DLC Trust Center fields."""
+    lid = valid_id(location_id)
+    cid = _require_company_id(backend, company_id)
+
+    clean_ein = re.sub(r"\D", "", (ein or "").strip())
+    if len(clean_ein) != 9:
+        raise HighLevelError("Provide a valid 9-digit US EIN (e.g. 12-3456789).")
+    formatted_ein = f"{clean_ein[:2]}-{clean_ein[2:]}"
+
+    status = inspect_a2p_trust_center_status(backend, location_id=lid)
+    needs_lc_subaccount = not status["lc_phone_subaccount"]["provisioned"]
+
+    pack = a2p_campaign_pack(
+        brand_name=brand_name,
+        legal_name=legal_name,
+        website=website,
+        email=email,
+        phone=phone,
+        location_id=lid,
+        address=address,
+        city=city,
+        state=state,
+        postal_code=postal_code,
+        country=country,
+        timezone=timezone,
+    )
+    reg = pack["campaign_registration"]
+
+    location_payload: dict[str, Any] = {
+        "companyId": cid,
+        "name": brand_name.strip(),
+        "legalBusinessName": legal_name.strip(),
+        "address": address.strip(),
+        "city": city.strip(),
+        "state": state.strip(),
+        "postalCode": postal_code.strip(),
+        "country": country.strip(),
+        "phone": phone.strip(),
+        "email": email.strip(),
+        "website": pack["website"],
+        "timezone": timezone.strip(),
+        "businessInformation": {
+            "regions": ["USA_AND_CANADA"],
+            "businessNotRegistered": False,
+            "cpn": None,
+            "registrationType": "USA: Employer Identification Number (EIN)",
+            "registrationNumber": formatted_ein,
+            "registrationId": "EIN",
+            "industry": industry.strip(),
+            "type": entity_type.strip(),
+        },
+        "authorizedRepresentative": {
+            "firstName": rep_first_name.strip(),
+            "lastName": rep_last_name.strip(),
+            "phoneNumber": rep_phone.strip(),
+            "position": rep_position.strip(),
+            "title": rep_title.strip(),
+            "email": rep_email.strip(),
+        },
+    }
+
+    campaign_payload: dict[str, Any] = {
+        "campaignDetails": {
+            "useCase": "Low Volume Mixed",
+            "useCaseDescription": reg["campaign_description"],
+            "sampleMessages": reg["sample_messages"][:2],
+            "endUserConsent": reg["opt_in_workflow_description"],
+            "optInKeywords": ",".join(reg["opt_in_keywords"]),
+            "optInMessage": reg["opt_in_confirmation_message"],
+            "privacyPolicyUrl": reg["privacy_policy_url"],
+            "termsAndConditionsUrl": reg["terms_of_service_url"],
+            "optInMethod": "WEBSITE",
+            "optInImageUrl": reg["opt_in_form_url"],
+            "checkboxStates": {
+                "phoneNumber": True,
+                "links": True,
+                "consent": True,
+                "optIn": True,
+            },
+        }
+    }
+
+    plan_core = {
+        "resource": "a2p_trust_center_stage",
+        "action": "stage_a2p_trust_center",
+        "company_id": cid,
+        "location_id": lid,
+        "brand_name": brand_name.strip(),
+        "legal_name": legal_name.strip(),
+        "ein": formatted_ein,
+        "needs_lc_phone_subaccount": needs_lc_subaccount,
+        "requests": {
+            "enable_lc_phone_subaccount": (
+                {
+                    "method": "POST",
+                    "path": "/conversations/providers/twilio/setup/subaccount",
+                    "query": {"locationId": lid},
+                    "payload": {},
+                }
+                if needs_lc_subaccount
+                else None
+            ),
+            "stage_location_profile": {
+                "method": "PUT",
+                "path": f"/locations/{lid}",
+                "payload": location_payload,
+            },
+            "stage_twilio_campaign_draft": {
+                "method": "PUT",
+                "path": "/phone-system/twilio-accounts",
+                "query": {"locationId": lid},
+                "payload": campaign_payload,
+            },
+        },
+    }
+    return {**plan_core, "sha256": plan_digest(plan_core)}
+
+
+def apply_a2p_trust_center_stage_plan(
+    backend: BackendClient,
+    plan: dict[str, Any],
+    *,
+    confirm_plan: str,
+) -> dict[str, Any]:
+    if confirm_plan != plan.get("sha256"):
+        raise HighLevelError("--confirm-plan hash does not match the current preview state; re-run preview.")
+
+    lid = valid_id(plan["location_id"])
+    reqs = plan["requests"]
+    writes = 0
+    completed_steps: list[str] = []
+
+    try:
+        lc_req = reqs.get("enable_lc_phone_subaccount")
+        if isinstance(lc_req, dict):
+            backend.request(
+                lc_req["method"],
+                lc_req["path"],
+                body=lc_req["payload"],
+                query=lc_req.get("query"),
+            )
+            writes += 1
+            completed_steps.append("enable_lc_phone_subaccount")
+
+        loc_req = reqs["stage_location_profile"]
+        backend.request(loc_req["method"], loc_req["path"], body=loc_req["payload"])
+        writes += 1
+        completed_steps.append("stage_location_profile")
+
+        camp_req = reqs["stage_twilio_campaign_draft"]
+        backend.request(
+            camp_req["method"],
+            camp_req["path"],
+            body=camp_req["payload"],
+            query=camp_req.get("query"),
+        )
+        writes += 1
+        completed_steps.append("stage_twilio_campaign_draft")
+    except HighLevelError as exc:
+        err = HighLevelError(f"{exc} (completed_steps={completed_steps})")
+        err.completed_steps = list(completed_steps)  # type: ignore[attr-defined]
+        raise err from None
+
+    after_status = inspect_a2p_trust_center_status(backend, location_id=lid)
+    return {
+        "mode": "applied",
+        "action": "stage_a2p_trust_center",
+        "location_id": lid,
+        "writes_sent": writes,
+        "verified": bool(after_status.get("ok")),
+        "status": after_status,
+    }
+
 
