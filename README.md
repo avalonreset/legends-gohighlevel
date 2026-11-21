@@ -6,6 +6,7 @@
 [![release](https://img.shields.io/github/v/release/avalonreset/legends-gohighlevel?style=flat-square&label=release&labelColor=000000&color=ff0000)](https://github.com/avalonreset/legends-gohighlevel/releases/latest)
 [![checks](https://img.shields.io/github/actions/workflow/status/avalonreset/legends-gohighlevel/checks.yml?branch=main&style=flat-square&label=checks&labelColor=000000)](https://github.com/avalonreset/legends-gohighlevel/actions/workflows/checks.yml)
 [![license](https://img.shields.io/github/license/avalonreset/legends-gohighlevel?style=flat-square&label=license&labelColor=000000&color=666666)](LICENSE)
+[![github list: 22 repos](https://img.shields.io/badge/github_list-22_repos-ff0000?style=flat-square&labelColor=000000)](https://github.com/stars/avalonreset/lists/cto-legends)
 
 **GoHighLevel API v2, Workflows v3, Voice/Conversation AI, Custom Objects, Snapshots V2 Batch Cloning, Workflow Step X-Ray, Atomic Rebranding, and 5-layer SaaS agency governance CLI with preview-first mutations, API readback, and a reusable knowledge vault.**
 
@@ -285,7 +286,9 @@ See [compatibility and verification](docs/RELEASE-READINESS.md), [search positio
 
 ---
 
+<p align="center"><a href="https://github.com/stars/avalonreset/lists/cto-legends"><img src="assets/collection-star-shrine.svg" width="100%" alt="GitHub Star List: The complete cto-legends collection on one page. Bookmark or star the router and every module from a single GitHub list."></a></p>
+
 **Specification & benchmarks on cto-legends.com:**
 - **Module specification & architecture matrix:** [cto-legends.com/modules/legends-gohighlevel](https://cto-legends.com/modules/legends-gohighlevel)
 - **Related engineering dispatches:** [How to Build AI Agents: Production CLI & MCP Routing](https://cto-legends.com/blog?post=how-to-build-ai-agents-cli-mcp-routing) · [Claude Code Skills: MCP vs CLI Workflow Architecture](https://cto-legends.com/blog?post=claude-code-skills-mcp-vs-cli-workflow) · [Fractional CTO Advisory: Technical Due Diligence Guide](https://cto-legends.com/blog?post=fractional-cto-technical-due-diligence-guide)
-- **Ecosystem hub:** [cto-legends.com/home](https://cto-legends.com/home)
+- **Ecosystem hub & 22-repo GitHub list:** [cto-legends.com/home](https://cto-legends.com/home) · [github.com/stars/avalonreset/lists/cto-legends](https://github.com/stars/avalonreset/lists/cto-legends) (browse or star all 22 repositories from one page)
