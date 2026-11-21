@@ -16,7 +16,7 @@ MIRROR_FILES = [
     "CHANGELOG.md",
 ]
 MIRROR_DIRS = ["docs", "knowledge", "skills", "wiki", "references", "templates", "assets"]
-MIRROR_SUFFIXES = {".md", ".json", ".png", ".webp"}
+MIRROR_SUFFIXES = {".md", ".json", ".png", ".webp", ".svg"}
 MIRROR_NAMES = {"LICENSE", "NOTICE"}
 
 

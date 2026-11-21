@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.6 (2026-11-21)
+
+- **Evergreen Visual Documentation & Outlined SVG Cards (`README.md`, `scripts/render_cards.py`, `assets/cards/r1/`):** Added `scripts/render_cards.py` generating 7 outlined Legends Font `r1` SVG architecture and workflow cards (`slot-1-agent-handoff.svg`, `slot-2-three-pillars.svg`, `slot-3-plain-english-chains.svg`, `slot-4-ghl-architecture.svg`, `slot-5-adhoc-vs-ghl.svg`, `slot-7-message-avalon-reset.svg`, and `slot-collection-star-shrine.svg`) and structured collapsible reference drawers in `README.md`.
+- **Wheel & Source Distribution Asset Packaging (`setup.py`, `MANIFEST.in`):** Added `.svg` to `MIRROR_SUFFIXES` in `setup.py` and `MANIFEST.in` so standalone wheel and sdist builds package all `assets/cards/r1/*.svg` files.
+
 ## 0.3.5 (2026-11-11)
 
 - **A2P 10DLC Compliance & Trust Center Staging Engine (`legends_gohighlevel/governance.py`, `legends_gohighlevel/agency.py`, `legends_gohighlevel/cli.py`):** Added `a2p-preflight` (auditing GHL Business Profile parity, NANP 555-placeholder phones, 301 redirect pipes, and live HTTPS DOM forms/checkboxes/privacy policies), `a2p-campaign-pack` (generating TCR-ready Campaign Registration JSON and Markdown bundles with `--overwrite` and Controlled Folder Access guards), `a2p-trust-center-status`, and preview-first `a2p-trust-center-stage` with synthetic RFC 2606 defaults and zero fallback entity residue.

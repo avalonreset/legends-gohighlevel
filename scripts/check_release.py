@@ -48,7 +48,7 @@ REQUIRED = [
     "scripts/verify_knowledge_attachment.py",
     ".github/workflows/checks.yml",
 ]
-TEXT_SUFFIXES = {".md", ".py", ".json", ".toml", ".yml", ".in", ".txt", ".cfg", ".ini", ".cff"}
+TEXT_SUFFIXES = {".md", ".py", ".json", ".toml", ".yml", ".in", ".txt", ".cfg", ".ini", ".cff", ".svg"}
 FORBIDDEN = [
     r"(?i)[a-z]:\\users\\",
     r"(?i)\.tail[a-z0-9]+\.ts\.net",
@@ -162,6 +162,27 @@ def check(root: Path = ROOT) -> list[str]:
         m = re.search(r'__version__\s*=\s*"([^"]+)"', init_path.read_text(encoding="utf-8-sig"))
         if m:
             pkg_version = m.group(1)
+
+    if pkg_version:
+        pyproject_path = root / "pyproject.toml"
+        if pyproject_path.is_file():
+            m_py = re.search(r'^version\s*=\s*"([^"]+)"', pyproject_path.read_text(encoding="utf-8-sig"), re.M)
+            if not m_py or m_py.group(1) != pkg_version:
+                errors.append(f"pyproject.toml version != package version ({pkg_version})")
+        cff_path = root / "CITATION.cff"
+        if cff_path.is_file():
+            m_cff = re.search(r"^version:\s*(\S+)", cff_path.read_text(encoding="utf-8-sig"), re.M)
+            if not m_cff or m_cff.group(1) != pkg_version:
+                errors.append(f"CITATION.cff version != package version ({pkg_version})")
+        cand_path = root / "docs" / "catalog-entry.candidate.json"
+        if cand_path.is_file():
+            cand_ver = json.loads(cand_path.read_text(encoding="utf-8-sig")).get("version")
+            if cand_ver != pkg_version:
+                errors.append(f"docs/catalog-entry.candidate.json version ({cand_ver}) != package version ({pkg_version})")
+        changelog_path = root / "CHANGELOG.md"
+        if changelog_path.is_file():
+            if f"## {pkg_version} " not in changelog_path.read_text(encoding="utf-8-sig"):
+                errors.append(f"CHANGELOG.md missing heading for {pkg_version}")
 
     pack_path = root / "knowledge" / "gohighlevel" / "pack.json"
     if pack_path.is_file():
