@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.7 (2026-11-22)
+
+- Sync vendored `cto-legends` router skill pin (`69ddc4f68faa`), enforce LF line endings via `.gitattributes`, and standardize release artifact checksums.
+
 ## 0.3.6 (2026-11-21)
 
 - **Evergreen Visual Documentation & Outlined SVG Cards (`README.md`, `scripts/render_cards.py`, `assets/cards/r1/`):** Added `scripts/render_cards.py` generating 7 outlined Legends Font `r1` SVG architecture and workflow cards (`slot-1-agent-handoff.svg`, `slot-2-three-pillars.svg`, `slot-3-plain-english-chains.svg`, `slot-4-ghl-architecture.svg`, `slot-5-adhoc-vs-ghl.svg`, `slot-7-message-avalon-reset.svg`, and `slot-collection-star-shrine.svg`) and structured collapsible reference drawers in `README.md`.

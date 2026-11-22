@@ -1,12 +1,12 @@
 # Release readiness
 
-Release: `legends-gohighlevel` 0.3.6. Release date: 2026-11-21.
+Release: `legends-gohighlevel` 0.3.7. Release date: 2026-11-21.
 
-Status: `0.3.6` verified across offline unit tests (`tests/test_gohighlevel.py` and `tests/test_social_x_bridge.py`), clean-environment wheel/sdist installation, `legends-empire` knowledge-pack attachment (preview, apply, repeat noop, and conflict refusal), live GoHighLevel API v2 and v3 sub-account read/write verification (`subaccount-audit`, `subaccount-rebrand-audit`, `profiles-matrix`, disposable `tag`, `contact`, `note`, `task`, and `custom-value` round trips), and live 5-layer agency audit, V2 snapshot batch cloning, PIT minting, workflow X-ray, and remediation across all agency sub-accounts and users (`ok: true`, `issue_count: 0`).
+Status: `0.3.7` verified across offline unit tests (`tests/test_gohighlevel.py` and `tests/test_social_x_bridge.py`), clean-environment wheel/sdist installation, `legends-empire` knowledge-pack attachment (preview, apply, repeat noop, and conflict refusal), live GoHighLevel API v2 and v3 sub-account read/write verification (`subaccount-audit`, `subaccount-rebrand-audit`, `profiles-matrix`, disposable `tag`, `contact`, `note`, `task`, and `custom-value` round trips), and live 5-layer agency audit, V2 snapshot batch cloning, PIT minting, workflow X-ray, and remediation across all agency sub-accounts and users (`ok: true`, `issue_count: 0`).
 
 | Gate | State |
 |---|---|
-| Product rename (`legends-gohighlevel`) and portable Python 3.11+ package | Completed (`0.3.6`) |
+| Product rename (`legends-gohighlevel`) and portable Python 3.11+ package | Completed (`0.3.7`) |
 | Official-source knowledge vault, `legends.knowledge-pack/v1` pack, and Empire templates | Completed and verified through `legends-empire` (preview, apply, repeat noop, and conflict refusal) |
 | Attribution and MIT license | Completed |
 | House banner and social image | Rendered and visually inspected |
