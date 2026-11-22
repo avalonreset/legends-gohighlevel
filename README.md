@@ -229,7 +229,7 @@ legends-gohighlevel dashboard-audit --location-id LOCATION_ID --dashboard-id DAS
 <details>
 <summary><strong>Knowledge vault, runbooks, and <code>legends-empire</code> integration</strong></summary>
 
-Start at [wiki/index.md](wiki/index.md) or attach the versioned knowledge pack at [knowledge/gohighlevel/pack.json](knowledge/gohighlevel/pack.json) (`legends.knowledge-pack/v1`). Open this repository folder in Obsidian or read it as plain Markdown.
+Start at [wiki/index.md](wiki/index.md) or attach the versioned knowledge pack at [knowledge/gohighlevel/pack.json](knowledge/gohighlevel/pack.json) (`legends.knowledge-pack/v1`). Attach into a [`legends-empire`](https://github.com/avalonreset/legends-empire) vault or read it directly as plain Markdown.
 
 - **Operational runbooks:** [Agency governance](wiki/agency-governance.md), [Internal backend & dashboards](wiki/internal-backend-and-dashboards.md), [Authentication & scopes](wiki/authentication.md), [CRM operations](wiki/crm-operations.md), [Email & deliverability](wiki/email-and-deliverability.md), [Troubleshooting](wiki/troubleshooting.md), and the dated [source ledger](references/sources.md).
 - **Private operating templates:** Use [the Empire integration guide](docs/EMPIRE.md) with [templates/subaccount-inventory.md](templates/subaccount-inventory.md), [templates/change-receipt.md](templates/change-receipt.md), and [templates/unnerf-audit-receipt.md](templates/unnerf-audit-receipt.md) to keep private workspace inventories, change receipts, and un-nerf audits in your own vault. Installing the module never modifies a personal vault automatically.
